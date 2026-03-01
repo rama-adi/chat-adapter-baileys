@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatInstance } from "chat";
 import type { WAMessage } from "baileys";
+import {
+  downloadMediaMessage,
+  fetchLatestBaileysVersion,
+  generateMessageIDV2,
+} from "baileys";
 import { BaileysAdapter } from "./adapter.js";
 import type { BaileysAdapterConfig } from "./types.js";
 
@@ -51,7 +56,6 @@ const mockChat = {
   processMessage: vi.fn(),
   getState: vi.fn(),
   getUserName: vi.fn(() => "mybot"),
-  handleIncomingMessage: vi.fn(),
   processAction: vi.fn(),
   processAppHomeOpened: vi.fn(),
   processAssistantContextChanged: vi.fn(),
@@ -119,6 +123,7 @@ describe("BaileysAdapter", () => {
       key: { id: "sent-msg-id", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
       message: { conversation: "sent" },
     });
+    mockSocket.requestPairingCode.mockResolvedValue("PAIR-1234");
 
     adapter = makeAdapter();
     await adapter.initialize(mockChat);
@@ -190,6 +195,26 @@ describe("BaileysAdapter", () => {
     });
   });
 
+  // ── connect lifecycle ─────────────────────────────────────────────────────
+
+  describe("connect", () => {
+    it("uses configured version without calling fetchLatestBaileysVersion", async () => {
+      adapter = makeAdapter({ version: [2, 9999, 1] });
+      await adapter.initialize(mockChat);
+      await adapter.connect();
+
+      expect(fetchLatestBaileysVersion).not.toHaveBeenCalled();
+      expect(mockMakeWASocket).toHaveBeenCalledWith(
+        expect.objectContaining({ version: [2, 9999, 1] })
+      );
+    });
+
+    it("fetches latest version when no version is configured", async () => {
+      await adapter.connect();
+      expect(fetchLatestBaileysVersion).toHaveBeenCalledOnce();
+    });
+  });
+
   // ── parseMessage ──────────────────────────────────────────────────────────
 
   describe("parseMessage", () => {
@@ -250,6 +275,58 @@ describe("BaileysAdapter", () => {
       expect(msg.attachments[0].type).toBe("file");
       expect(msg.attachments[0].name).toBe("report.pdf");
     });
+
+    it("attaches video attachment and exposes fetchData when socket exists", async () => {
+      const raw = makeDMMessage({
+        message: { videoMessage: { mimetype: "video/mp4", caption: "" } },
+      });
+      await adapter.connect();
+
+      const msg = adapter.parseMessage(raw);
+      expect(msg.attachments[0].type).toBe("video");
+      expect(msg.attachments[0].fetchData).toBeTypeOf("function");
+      await msg.attachments[0].fetchData?.();
+      expect(downloadMediaMessage).toHaveBeenCalled();
+    });
+
+    it("attaches audio attachment and exposes fetchData when socket exists", async () => {
+      const raw = makeDMMessage({
+        message: { audioMessage: { mimetype: "audio/ogg" } },
+      });
+      await adapter.connect();
+
+      const msg = adapter.parseMessage(raw);
+      expect(msg.attachments[0].type).toBe("audio");
+      expect(msg.attachments[0].fetchData).toBeTypeOf("function");
+      await msg.attachments[0].fetchData?.();
+      expect(downloadMediaMessage).toHaveBeenCalled();
+    });
+
+    it("uses generateMessageIDV2 when incoming message has no id", () => {
+      const raw = makeDMMessage({
+        key: { remoteJid: "15551234567@s.whatsapp.net", id: undefined, fromMe: false },
+      });
+      const parsed = adapter.parseMessage(raw);
+      expect(generateMessageIDV2).toHaveBeenCalled();
+      expect(parsed.id).toBe("generated-id");
+    });
+
+    it("marks edited metadata when protocolMessage type is edit", () => {
+      const raw = makeDMMessage({
+        message: { protocolMessage: { type: 14 } },
+      });
+      expect(adapter.parseMessage(raw).metadata.edited).toBe(true);
+    });
+  });
+
+  // ── fetchMessages ─────────────────────────────────────────────────────────
+
+  describe("fetchMessages", () => {
+    it("returns empty messages array (no thread history API in WhatsApp)", async () => {
+      const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      const result = await adapter.fetchMessages(threadId);
+      expect(result.messages).toEqual([]);
+    });
   });
 
   // ── fetchChannelMessages ──────────────────────────────────────────────────
@@ -296,6 +373,15 @@ describe("BaileysAdapter", () => {
       expect(info.id).toBe(threadId);
       expect(info.channelId).toBe(threadId);
       expect(info.isDM).toBe(true);
+    });
+  });
+
+  // ── renderFormatted ───────────────────────────────────────────────────────
+
+  describe("renderFormatted", () => {
+    it("renders mdast content into WhatsApp formatting", () => {
+      const ast = adapter.parseMessage(makeDMMessage({ message: { conversation: "*bold*" } })).formatted;
+      expect(adapter.renderFormatted(ast)).toContain("*bold*");
     });
   });
 
@@ -509,6 +595,20 @@ describe("BaileysAdapter", () => {
         });
         expect(mockMakeWASocket.mock.calls.length).toBeGreaterThan(callsBefore);
       });
+
+      it("does not reconnect after an explicit disconnect()", async () => {
+        const callsBeforeDisconnect = mockMakeWASocket.mock.calls.length;
+        await adapter.disconnect();
+
+        await capturedEvHandler!({
+          "connection.update": {
+            connection: "close",
+            lastDisconnect: { error: { output: { statusCode: 500 } } },
+          },
+        });
+
+        expect(mockMakeWASocket.mock.calls.length).toBe(callsBeforeDisconnect);
+      });
     });
 
     // ── messages.upsert event ─────────────────────────────────────────────────
@@ -571,6 +671,37 @@ describe("BaileysAdapter", () => {
     it("postMessage throws a validation error", async () => {
       const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
       await expect(adapter.postMessage(threadId, { raw: "hi" })).rejects.toThrow();
+    });
+
+    it("startTyping is a no-op when socket is not connected", async () => {
+      const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      await adapter.startTyping(threadId);
+      expect(mockSocket.sendPresenceUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("QR and pairing callbacks", () => {
+    it("emits QR and pairing code once while connecting", async () => {
+      const onQR = vi.fn();
+      const onPairingCode = vi.fn();
+      adapter = makeAdapter({
+        onQR,
+        phoneNumber: "15551234567",
+        onPairingCode,
+      });
+      await adapter.initialize(mockChat);
+      await adapter.connect();
+
+      await capturedEvHandler!({
+        "connection.update": { connection: "connecting", qr: "qr-value-1" },
+      });
+      await capturedEvHandler!({
+        "connection.update": { connection: "connecting", qr: "qr-value-2" },
+      });
+
+      expect(onQR).toHaveBeenCalledTimes(2);
+      expect(onPairingCode).toHaveBeenCalledTimes(1);
+      expect(mockSocket.requestPairingCode).toHaveBeenCalledWith("15551234567");
     });
   });
 });

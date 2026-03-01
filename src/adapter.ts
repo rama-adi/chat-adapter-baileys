@@ -50,6 +50,7 @@ export class BaileysAdapter
   private _config: BaileysAdapterConfig;
   private _converter = new BaileysFormatConverter();
   private _isConnected = false;
+  private _shouldReconnect = true;
   /** Guard so we only request a pairing code once per socket lifetime. */
   private _pairingCodeRequested = false;
 
@@ -86,12 +87,14 @@ export class BaileysAdapter
    * ```
    */
   async connect(): Promise<void> {
+    this._shouldReconnect = true;
     await this._createSocket();
   }
 
   /** Disconnect from WhatsApp and clean up the socket. */
   async disconnect(): Promise<void> {
     this._isConnected = false;
+    this._shouldReconnect = false;
     if (this._socket) {
       this._socket.end(undefined);
       this._socket = null;
@@ -114,7 +117,6 @@ export class BaileysAdapter
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, undefined),
       },
-      printQRInTerminal: false,
       ...(this._config.socketOptions ?? {}),
     } as Parameters<typeof makeWASocket>[0]);
 
@@ -170,7 +172,7 @@ export class BaileysAdapter
           const isExpectedRestart =
             statusCode === DisconnectReason.restartRequired;
           const shouldReconnect =
-            statusCode !== DisconnectReason.loggedOut;
+            this._shouldReconnect && statusCode !== DisconnectReason.loggedOut;
 
           this._logger.info(
             isExpectedRestart
@@ -512,7 +514,7 @@ export class BaileysAdapter
   // Typing indicator
   // ---------------------------------------------------------------------------
 
-  async startTyping(threadId: string): Promise<void> {
+  async startTyping(threadId: string, _status?: string): Promise<void> {
     const { jid } = this.decodeThreadId(threadId);
     if (this._socket) {
       await this._socket.sendPresenceUpdate("composing", jid);

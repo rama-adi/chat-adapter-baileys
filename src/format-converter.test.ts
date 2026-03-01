@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Paragraph, Text } from "mdast";
+import type { Paragraph, Root, Text } from "mdast";
 import { BaileysFormatConverter } from "./format-converter.js";
 
 const converter = new BaileysFormatConverter();
@@ -97,6 +97,65 @@ describe("BaileysFormatConverter.fromAst", () => {
     const result = converter.fromAst(converter.toAst("```\nconsole.log(1)\n```"));
     expect(result).toContain("```");
     expect(result).toContain("console.log(1)");
+  });
+
+  it("renders blockquotes line-by-line with > prefixes", () => {
+    const result = converter.fromAst(converter.toAst("> first line\n> second line"));
+    expect(result).toContain("> first line");
+    expect(result).toContain("> second line");
+  });
+
+  it("renders links with empty url as plain link text", () => {
+    const ast: Root = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "link",
+              url: "",
+              children: [{ type: "text", value: "Label" }],
+            },
+          ],
+        },
+      ],
+    };
+    expect(converter.fromAst(ast)).toContain("Label");
+    expect(converter.fromAst(ast)).not.toContain("()");
+  });
+
+  it("falls back to node.value for unknown node types", () => {
+    const ast = {
+      type: "root",
+      children: [{ type: "mystery", value: "x" }],
+    } as unknown as Root;
+    expect(converter.fromAst(ast)).toBe("x");
+  });
+
+  it("renders mdast break nodes as newlines", () => {
+    const ast = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            { type: "text", value: "a" },
+            { type: "break" },
+            { type: "text", value: "b" },
+          ],
+        },
+      ],
+    } as unknown as Root;
+    expect(converter.fromAst(ast)).toContain("a\nb");
+  });
+
+  it("renders listItem nodes by converting their children", () => {
+    const ast = {
+      type: "root",
+      children: [{ type: "listItem", children: [{ type: "text", value: "solo-item" }] }],
+    } as unknown as Root;
+    expect(converter.fromAst(ast)).toContain("solo-item");
   });
 
   it("roundtrips plain text unchanged", () => {

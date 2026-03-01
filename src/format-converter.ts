@@ -3,7 +3,6 @@ import {
   parseMarkdown,
   type AdapterPostableMessage,
   type Root,
-  type Content,
 } from "chat";
 
 /**
@@ -46,16 +45,16 @@ export class BaileysFormatConverter extends BaseFormatConverter {
   private convertNode(node: AnyNode): string {
     switch (node.type) {
       case "text":
-        return node.value;
+        return node.value ?? "";
 
       case "strong":
-        return `*${this.convertChildren(node.children)}*`;
+        return `*${this.convertChildren(node.children ?? [])}*`;
 
       case "emphasis":
-        return `_${this.convertChildren(node.children)}_`;
+        return `_${this.convertChildren(node.children ?? [])}_`;
 
       case "delete":
-        return `~${this.convertChildren(node.children)}~`;
+        return `~${this.convertChildren(node.children ?? [])}~`;
 
       case "inlineCode":
         return `\`${node.value}\``;
@@ -64,15 +63,15 @@ export class BaileysFormatConverter extends BaseFormatConverter {
         return `\`\`\`\n${node.value}\n\`\`\``;
 
       case "link": {
-        const linkText = this.convertChildren(node.children);
+        const linkText = this.convertChildren(node.children ?? []);
         return node.url ? `${linkText} (${node.url})` : linkText;
       }
 
       case "paragraph":
-        return this.convertChildren(node.children);
+        return this.convertChildren(node.children ?? []);
 
       case "blockquote":
-        return node.children
+        return (node.children ?? [])
           .map((child: AnyNode) => {
             const text = this.convertNode(child);
             return text
@@ -83,7 +82,7 @@ export class BaileysFormatConverter extends BaseFormatConverter {
           .join("\n");
 
       case "list":
-        return node.children
+        return (node.children ?? [])
           .map((item: AnyNode, index: number) =>
             node.ordered
               ? `${index + 1}. ${this.convertChildren(item.children ?? [])}`
@@ -114,4 +113,4 @@ type AnyNode = {
   url?: string;
   ordered?: boolean;
   children?: AnyNode[];
-} & Content;
+};
