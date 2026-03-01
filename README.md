@@ -139,7 +139,7 @@ createBaileysAdapter({
 
 ## WhatsApp Extensions
 
-`BaileysAdapter` exposes extra methods for WhatsApp features that have no equivalent in the Chat SDK interface. Call these directly on the adapter instance:
+`BaileysAdapter` exposes extra methods for WhatsApp features that have no equivalent in the Chat SDK interface:
 
 | Method | Description |
 |---|---|
@@ -149,6 +149,8 @@ createBaileysAdapter({
 | `whatsapp.sendLocation(threadId, lat, lon, options?)` | Send a native location pin |
 | `whatsapp.sendPoll(threadId, question, options, selectableCount?)` | Send a WhatsApp poll |
 | `whatsapp.fetchGroupParticipants(threadId)` | List group members with admin roles |
+
+For multi-account setups, use `createBaileysExtensions(waMain, waSales)` to get a router that auto-selects the right adapter — no manual routing needed.
 
 See [Extensions](./docs/extensions.md) for full documentation and examples.
 

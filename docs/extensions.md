@@ -14,6 +14,30 @@ Features specific to one platform — like WhatsApp's quoted replies, polls, or 
 
 The tradeoff: extension calls are WhatsApp-specific. If you ever add a second adapter (e.g. Slack), you'll need to branch on the adapter type or handle those features separately.
 
+## Multi-account
+
+For single-account setups, call extension methods directly on the adapter instance.
+
+For multi-account setups, use `createBaileysExtensions` to get a router that automatically selects the right adapter based on the thread ID prefix. `setPresence` broadcasts to all accounts.
+
+```ts
+import { createBaileysAdapter, createBaileysExtensions } from "chat-adapter-baileys";
+
+const waMain = createBaileysAdapter({ adapterName: "baileys-main", auth: authMain });
+const waSales = createBaileysAdapter({ adapterName: "baileys-sales", auth: authSales });
+
+const wa = createBaileysExtensions(waMain, waSales);
+
+bot.onSubscribedMessage(async (thread, message) => {
+  await wa.reply(message, "Got it!");           // routes to the right account
+  await wa.markRead(thread.threadId, [message.id]);
+});
+
+await wa.setPresence("available"); // sets presence on both accounts
+```
+
+If you pass a thread ID or message that doesn't match any registered adapter, `createBaileysExtensions` throws a descriptive error rather than silently sending from the wrong account.
+
 ---
 
 ## `reply(message, text)` — Quoted reply
