@@ -111,7 +111,7 @@ const bot = new Chat({
 });
 ```
 
-**Register handlers before calling `adapter.connect()`** — if you connect first, messages that arrive during handler registration may be missed.
+**Register handlers before calling `bot.initialize()` and `adapter.connect()`** — if you connect first, messages that arrive during handler registration may be missed.
 
 ### Respond when someone mentions the bot in a group
 
@@ -154,11 +154,12 @@ bot.onNewMessage(/.+/, async (thread, message) => {
 
 ---
 
-## 5. Connect
+## 5. Initialize and connect
 
-Once handlers are registered, call `connect()` to open the WhatsApp WebSocket:
+Once handlers are registered, initialize `Chat` and then call `connect()` to open the WhatsApp WebSocket:
 
 ```ts
+await bot.initialize();
 await whatsapp.connect();
 console.log("Bot is running. Scan the QR code if prompted.");
 ```
@@ -202,6 +203,7 @@ bot.onSubscribedMessage(async (thread, message) => {
   await thread.post(`Echo: ${message.text}`);
 });
 
+await bot.initialize();
 await whatsapp.connect();
 ```
 
@@ -239,7 +241,8 @@ const bot = new Chat({
   state: createMemoryState(),
 });
 
-// Connect both accounts
+// Initialize Chat once, then connect both accounts
+await bot.initialize();
 await waMain.connect();
 await waSales.connect();
 ```

@@ -13,7 +13,8 @@ Always follow this order:
 2. Create adapter              (createBaileysAdapter)
 3. Create Chat instance        (new Chat({ adapters: { ... } }))
 4. Register all handlers       (bot.onNewMention, bot.onSubscribedMessage, etc.)
-5. Connect                     (await adapter.connect())
+5. Initialize Chat             (await bot.initialize())
+6. Connect                     (await adapter.connect())
 ```
 
 **Why does handler registration come before `connect()`?**
@@ -31,7 +32,8 @@ const bot = new Chat({ userName: "bot", adapters: { whatsapp }, state: createMem
 bot.onNewMention(async (thread, message) => { /* ... */ });
 bot.onSubscribedMessage(async (thread, message) => { /* ... */ });
 
-// ✅ Connect LAST
+// ✅ Initialize, then connect LAST
+await bot.initialize();
 await whatsapp.connect();
 ```
 

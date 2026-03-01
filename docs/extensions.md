@@ -111,6 +111,7 @@ The Chat SDK's `thread.startTyping()` sends a per-chat "composing" indicator. Th
 
 ```ts
 // Mark the bot as online when it starts
+await bot.initialize();
 await whatsapp.connect();
 await whatsapp.setPresence("available");
 

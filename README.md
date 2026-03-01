@@ -23,7 +23,7 @@ pnpm add qrcode
 
 ## Quick Start
 
-The setup has five steps: prepare auth, create the adapter, create a `Chat` instance, register handlers, then connect. **Always register handlers before connecting** — messages can arrive as soon as `connect()` is called.
+The setup has six steps: prepare auth, create the adapter, create a `Chat` instance, register handlers, initialize chat, then connect. **Always register handlers before connecting** — messages can arrive as soon as `connect()` is called.
 
 ```ts
 import { Chat } from "chat";
@@ -71,7 +71,10 @@ bot.onNewMessage(/.+/, async (thread, message) => {
   await thread.post(`DM received: ${message.text}`);
 });
 
-// 5. Connect — open the WhatsApp WebSocket
+// 5. Initialize Chat so adapters are attached
+await bot.initialize();
+
+// 6. Connect — open the WhatsApp WebSocket
 await whatsapp.connect();
 ```
 
@@ -101,6 +104,7 @@ const bot = new Chat({
   state: createMemoryState(),
 });
 
+await bot.initialize();
 await waMain.connect();
 await waSales.connect();
 ```

@@ -25,10 +25,12 @@ import {
 } from "@chat-adapter/shared";
 import makeWASocket, {
   DisconnectReason,
+  extractMessageContent as extractBaileysMessageContent,
   fetchLatestBaileysVersion,
   isJidGroup,
   isJidNewsletter,
   makeCacheableSignalKeyStore,
+  normalizeMessageContent,
   downloadMediaMessage,
   generateMessageIDV2,
   type WAMessage,
@@ -286,6 +288,7 @@ export class BaileysAdapter
     const jid = raw.key.remoteJid ?? "";
     const isGroup = isJidGroup(jid);
     const isMe = raw.key.fromMe ?? false;
+    const content = getMessageContent(raw);
 
     const senderId = isMe
       ? (this._socket?.user?.id ?? "unknown@s.whatsapp.net")
@@ -293,10 +296,10 @@ export class BaileysAdapter
         ? (raw.key.participant ?? jid)
         : jid;
 
-    const text = extractTextFromMessage(raw);
+    const text = extractTextFromMessage(content);
     const threadId = this.encodeThreadId({ jid });
 
-    const attachments: Attachment[] = buildAttachments(raw, this._socket);
+    const attachments: Attachment[] = buildAttachments(raw, content, this._socket);
 
     return new Message<WAMessage>({
       id: raw.key.id ?? generateMessageIDV2(),
@@ -746,8 +749,10 @@ export class BaileysAdapter
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function extractTextFromMessage(msg: WAMessage): string {
-  const m = msg.message;
+function extractTextFromMessage(
+  content: NonNullable<WAMessage["message"]> | undefined
+): string {
+  const m = content;
   if (!m) return "";
   return (
     m.conversation ??
@@ -758,17 +763,27 @@ function extractTextFromMessage(msg: WAMessage): string {
     m.buttonsMessage?.contentText ??
     m.listMessage?.description ??
     m.templateMessage?.hydratedTemplate?.hydratedContentText ??
-    m.editedMessage?.message?.protocolMessage?.editedMessage
-      ?.conversation ??
     ""
   );
 }
 
+function getMessageContent(
+  msg: WAMessage
+): NonNullable<WAMessage["message"]> | undefined {
+  const normalized = normalizeMessageContent(msg.message);
+  if (!normalized) return undefined;
+  return (
+    extractBaileysMessageContent(normalized) ??
+    normalized
+  ) as NonNullable<WAMessage["message"]>;
+}
+
 function buildAttachments(
   msg: WAMessage,
+  content: NonNullable<WAMessage["message"]> | undefined,
   socket: WASocket | null
 ): Attachment[] {
-  const m = msg.message;
+  const m = content;
   if (!m) return [];
 
   const attachments: Attachment[] = [];

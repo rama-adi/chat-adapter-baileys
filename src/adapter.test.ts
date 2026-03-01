@@ -33,6 +33,23 @@ vi.mock("baileys", () => ({
   fetchLatestBaileysVersion: vi.fn().mockResolvedValue({ version: [2, 3000, 0] }),
   isJidGroup: (jid: string) => jid.endsWith("@g.us"),
   isJidNewsletter: (jid: string) => jid.endsWith("@newsletter"),
+  normalizeMessageContent: (content: Record<string, any> | undefined) => {
+    if (!content) return undefined;
+    let current = content;
+    for (let i = 0; i < 5; i += 1) {
+      const inner =
+        current.ephemeralMessage ??
+        current.viewOnceMessage ??
+        current.documentWithCaptionMessage ??
+        current.viewOnceMessageV2 ??
+        current.viewOnceMessageV2Extension ??
+        current.editedMessage;
+      if (!inner?.message) break;
+      current = inner.message;
+    }
+    return current;
+  },
+  extractMessageContent: (content: Record<string, any> | undefined) => content,
   makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
   downloadMediaMessage: vi.fn().mockResolvedValue(Buffer.from("mock-media")),
   generateMessageIDV2: vi.fn(() => "generated-id"),
@@ -276,6 +293,19 @@ describe("BaileysAdapter", () => {
       expect(adapter.parseMessage(raw).text).toBe("Extended");
     });
 
+    it("extracts text from ephemeralMessage wrappers", () => {
+      const raw = makeDMMessage({
+        message: {
+          ephemeralMessage: {
+            message: {
+              conversation: "Wrapped text",
+            },
+          },
+        },
+      });
+      expect(adapter.parseMessage(raw).text).toBe("Wrapped text");
+    });
+
     it("extracts caption from imageMessage", () => {
       const raw = makeDMMessage({ message: { imageMessage: { caption: "Look at this" } } });
       expect(adapter.parseMessage(raw).text).toBe("Look at this");
@@ -305,6 +335,27 @@ describe("BaileysAdapter", () => {
       const msg = adapter.parseMessage(raw);
       expect(msg.attachments[0].type).toBe("file");
       expect(msg.attachments[0].name).toBe("report.pdf");
+    });
+
+    it("extracts caption and attachment from documentWithCaptionMessage wrappers", () => {
+      const raw = makeDMMessage({
+        message: {
+          documentWithCaptionMessage: {
+            message: {
+              documentMessage: {
+                mimetype: "application/pdf",
+                fileName: "wrapped-report.pdf",
+                caption: "Wrapped caption",
+              },
+            },
+          },
+        },
+      });
+
+      const msg = adapter.parseMessage(raw);
+      expect(msg.text).toBe("Wrapped caption");
+      expect(msg.attachments[0].type).toBe("file");
+      expect(msg.attachments[0].name).toBe("wrapped-report.pdf");
     });
 
     it("attaches video attachment and exposes fetchData when socket exists", async () => {

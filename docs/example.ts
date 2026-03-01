@@ -58,7 +58,7 @@ const whatsapp = createBaileysAdapter({
 // 3. Create the Chat instance
 //
 // The Chat instance coordinates all adapters and dispatches messages to
-// your handlers. Register ALL handlers before calling adapter.connect().
+// your handlers. Register ALL handlers before calling bot.initialize()/adapter.connect().
 // ---------------------------------------------------------------------------
 
 const bot = new Chat({
@@ -247,12 +247,13 @@ process.on("SIGINT", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. Connect
+// 6. Initialize and connect
 //
-// Always call connect() AFTER registering all handlers. The adapter opens
-// the WebSocket and starts receiving messages immediately. Auto-reconnect
-// is enabled by default for unexpected disconnects.
+// Always call bot.initialize() and connect() AFTER registering all handlers.
+// The adapter opens the WebSocket and starts receiving messages immediately.
+// Auto-reconnect is enabled by default for unexpected disconnects.
 // ---------------------------------------------------------------------------
 
+await bot.initialize();
 await whatsapp.connect();
 console.log("WhatsApp adapter connected. Waiting for messages...");

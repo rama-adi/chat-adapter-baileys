@@ -125,7 +125,7 @@ Baileys connects to WhatsApp by opening a **persistent outbound WebSocket** to W
 - `handleWebhook()` always returns HTTP `501 Not Implemented`.
 - Incoming messages arrive via the `messages.upsert` Baileys event, which the adapter subscribes to internally.
 
-If you have HTTP server code that routes to `adapter.handleWebhook()`, nothing will break — it just returns 501. To actually receive messages, call `adapter.connect()`.
+If you have HTTP server code that routes to `adapter.handleWebhook()`, nothing will break — it just returns 501. To actually receive messages in gateway mode, call `await bot.initialize()` and then `adapter.connect()`.
 
 ---
 

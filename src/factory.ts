@@ -29,6 +29,7 @@ import type { BaileysAdapterConfig } from "./types.js";
  *   await thread.post(`Hello, ${message.author.fullName}!`);
  * });
  *
+ * await bot.initialize();
  * await adapter.connect();
  * ```
  */

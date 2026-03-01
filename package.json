@@ -32,11 +32,13 @@
         "mdast": "^3.0.0"
     },
     "devDependencies": {
+        "@chat-adapter/state-memory": "^4.15.0",
         "@types/node": "^22.0.0",
+        "@vitest/coverage-v8": "^4.0.0",
         "chat": "^4.0.0",
+        "qrcode": "^1.5.4",
         "tsup": "^8.3.0",
         "typescript": "^5.7.0",
-        "@vitest/coverage-v8": "^4.0.0",
         "vitest": "^4.0.0"
     },
     "publishConfig": {

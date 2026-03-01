@@ -137,7 +137,8 @@ bot.onSubscribedMessage(async (thread, message) => {
   await thread.post(`Echo from ${thread.threadId.split(":")[0]}: ${message.text}`);
 });
 
-// Connect both accounts (each opens its own WebSocket)
+// Initialize Chat once, then connect both accounts (each opens its own WebSocket)
+await bot.initialize();
 await waMain.connect();
 await waSales.connect();
 ```
