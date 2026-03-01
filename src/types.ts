@@ -10,6 +10,17 @@ export interface BaileysThreadId {
 /** Configuration for the Baileys adapter */
 export interface BaileysAdapterConfig {
   /**
+   * Adapter identity used by Chat SDK serialization and thread ID prefixes.
+   *
+   * For multi-account deployments in a single `Chat` instance, set a unique
+   * value per account (for example: `"baileys-main"` and `"baileys-sales"`).
+   *
+   * Must not contain `:` because thread IDs use `name:encodedJid` format.
+   * Defaults to `"baileys"`.
+   */
+  adapterName?: string;
+
+  /**
    * Baileys authentication state.
    * Obtain this via `useMultiFileAuthState` or a custom auth store
    * — typically in a separate setup script.

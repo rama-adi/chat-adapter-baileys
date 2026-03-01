@@ -41,7 +41,7 @@ import type { BaileysAdapterConfig, BaileysThreadId } from "./types.js";
 export class BaileysAdapter
   implements Adapter<BaileysThreadId, WAMessage>
 {
-  readonly name = "baileys";
+  readonly name: string;
   readonly userName: string;
 
   private _socket: WASocket | null = null;
@@ -55,7 +55,16 @@ export class BaileysAdapter
   private _pairingCodeRequested = false;
 
   constructor(config: BaileysAdapterConfig) {
+    const adapterName = config.adapterName ?? "baileys";
+    if (adapterName.includes(":")) {
+      throw new ValidationError(
+        "baileys",
+        `Invalid adapterName "${adapterName}". ":" is not allowed.`
+      );
+    }
+
     this._config = config;
+    this.name = adapterName;
     this.userName = config.userName ?? "baileys-bot";
     this._logger = config.logger ?? new ConsoleLogger();
   }
@@ -219,18 +228,19 @@ export class BaileysAdapter
 
   encodeThreadId(data: BaileysThreadId): string {
     const encoded = Buffer.from(data.jid).toString("base64url");
-    return `baileys:${encoded}`;
+    return `${this.name}:${encoded}`;
   }
 
   decodeThreadId(threadId: string): BaileysThreadId {
-    const parts = threadId.split(":");
-    if (parts.length < 2 || parts[0] !== "baileys") {
+    const prefix = `${this.name}:`;
+    if (!threadId.startsWith(prefix)) {
       throw new ValidationError(
         "baileys",
         `Invalid Baileys thread ID: ${threadId}`
       );
     }
-    const jid = Buffer.from(parts[1], "base64url").toString();
+    const encodedJid = threadId.slice(prefix.length);
+    const jid = Buffer.from(encodedJid, "base64url").toString();
     return { jid };
   }
 

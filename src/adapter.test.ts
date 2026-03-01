@@ -160,6 +160,36 @@ describe("BaileysAdapter", () => {
     it("throws on a wrong adapter prefix", () => {
       expect(() => adapter.decodeThreadId("slack:somechannel")).toThrow();
     });
+
+    it("uses custom adapterName as the thread-id prefix", async () => {
+      const custom = makeAdapter({ adapterName: "baileys-main" });
+      await custom.initialize(mockChat);
+      const encoded = custom.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      expect(encoded).toMatch(/^baileys-main:/);
+      expect(custom.decodeThreadId(encoded)).toEqual({
+        jid: "15551234567@s.whatsapp.net",
+      });
+    });
+
+    it("rejects thread IDs from a different baileys account prefix", async () => {
+      const accountA = makeAdapter({ adapterName: "baileys-a" });
+      const accountB = makeAdapter({ adapterName: "baileys-b" });
+      await accountA.initialize(mockChat);
+      await accountB.initialize(mockChat);
+
+      const threadFromA = accountA.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      expect(() => accountB.decodeThreadId(threadFromA)).toThrow();
+    });
+
+    it("throws on invalid adapterName containing ':'", () => {
+      expect(
+        () =>
+          new BaileysAdapter({
+            auth: mockAuthState,
+            adapterName: "baileys:main",
+          })
+      ).toThrow();
+    });
   });
 
   // ── isDM ───────────────────────────────────────────────────────────────────
