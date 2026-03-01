@@ -36,7 +36,7 @@ import makeWASocket, {
   type WASocket,
 } from "baileys";
 import { BaileysFormatConverter } from "./format-converter.js";
-import type { BaileysAdapterConfig, BaileysThreadId } from "./types.js";
+import type { BaileysAdapterConfig, BaileysGroupParticipant, BaileysThreadId } from "./types.js";
 
 export class BaileysAdapter
   implements Adapter<BaileysThreadId, WAMessage>
@@ -551,6 +551,180 @@ export class BaileysAdapter
       );
     }
     return this._socket;
+  }
+
+  // ---------------------------------------------------------------------------
+  // WhatsApp extensions (not part of the Chat SDK Adapter interface)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Send a quoted reply to a message, producing WhatsApp's native reply bubble.
+   *
+   * The Chat SDK's `thread.post()` has no concept of quoting a specific message.
+   * Use this method directly on the adapter when you need the visual reply reference.
+   *
+   * @example
+   * ```typescript
+   * bot.onSubscribedMessage(async (thread, message) => {
+   *   await whatsapp.reply(message, "Got it!");
+   * });
+   * ```
+   */
+  async reply(
+    message: Message<WAMessage>,
+    text: string
+  ): Promise<RawMessage<WAMessage>> {
+    // Validate that the message belongs to this adapter instance.
+    // This catches accidental cross-account calls in multi-account setups
+    // (e.g. calling waMain.reply() with a message that arrived on waSales).
+    const prefix = `${this.name}:`;
+    if (!message.threadId.startsWith(prefix)) {
+      throw new ValidationError(
+        "baileys",
+        `reply: message belongs to adapter "${message.threadId.split(":")[0]}", not "${this.name}"`
+      );
+    }
+    const raw = message.raw;
+    const jid = raw.key.remoteJid ?? "";
+    if (!jid) {
+      throw new ValidationError("baileys", "reply: message has no remoteJid");
+    }
+    const socket = this._requireSocket();
+    const sent = await socket.sendMessage(jid, { text }, { quoted: raw });
+    return this._toRawMessage(sent, this.encodeThreadId({ jid }));
+  }
+
+  /**
+   * Mark one or more messages as read, sending read receipts to the sender.
+   *
+   * The Chat SDK has no read-receipt concept — call this directly when you want
+   * to explicitly acknowledge messages.
+   *
+   * @example
+   * ```typescript
+   * bot.onSubscribedMessage(async (thread, message) => {
+   *   await whatsapp.markRead(thread.threadId, [message.id]);
+   * });
+   * ```
+   */
+  async markRead(threadId: string, messageIds: string[]): Promise<void> {
+    const { jid } = this.decodeThreadId(threadId);
+    const socket = this._requireSocket();
+    const keys = messageIds.map((id) => ({ remoteJid: jid, id, fromMe: false }));
+    await socket.readMessages(keys);
+  }
+
+  /**
+   * Set the bot's global WhatsApp presence — whether it appears online or offline.
+   *
+   * The Chat SDK's `thread.startTyping()` sends a per-chat composing presence.
+   * This method controls the bot's top-level online/offline status.
+   *
+   * @example
+   * ```typescript
+   * await whatsapp.setPresence("available");   // appears online
+   * await whatsapp.setPresence("unavailable"); // appears offline
+   * ```
+   */
+  async setPresence(presence: "available" | "unavailable"): Promise<void> {
+    const socket = this._requireSocket();
+    await socket.sendPresenceUpdate(presence);
+  }
+
+  /**
+   * Send a location pin to a thread.
+   *
+   * WhatsApp supports native location messages (shown as a map pin). The Chat SDK
+   * has no location type, so this is exposed as an adapter extension.
+   *
+   * @example
+   * ```typescript
+   * await whatsapp.sendLocation(thread.threadId, 37.7749, -122.4194, {
+   *   name: "San Francisco",
+   *   address: "San Francisco, CA, USA",
+   * });
+   * ```
+   */
+  async sendLocation(
+    threadId: string,
+    latitude: number,
+    longitude: number,
+    options?: { name?: string; address?: string }
+  ): Promise<RawMessage<WAMessage>> {
+    const { jid } = this.decodeThreadId(threadId);
+    const socket = this._requireSocket();
+    const sent = await socket.sendMessage(jid, {
+      location: {
+        degreesLatitude: latitude,
+        degreesLongitude: longitude,
+        name: options?.name,
+        address: options?.address,
+      },
+    });
+    return this._toRawMessage(sent, threadId);
+  }
+
+  /**
+   * Send a WhatsApp poll to a thread.
+   *
+   * Polls are a native WhatsApp feature with no Chat SDK equivalent.
+   * `selectableCount` controls how many options a user can pick (default: 1).
+   *
+   * @example
+   * ```typescript
+   * await whatsapp.sendPoll(thread.threadId, "What time works for the call?", [
+   *   "10:00 AM",
+   *   "2:00 PM",
+   *   "5:00 PM",
+   * ]);
+   * ```
+   */
+  async sendPoll(
+    threadId: string,
+    question: string,
+    options: string[],
+    selectableCount = 1
+  ): Promise<RawMessage<WAMessage>> {
+    const { jid } = this.decodeThreadId(threadId);
+    const socket = this._requireSocket();
+    const sent = await socket.sendMessage(jid, {
+      poll: { name: question, values: options, selectableCount },
+    });
+    return this._toRawMessage(sent, threadId);
+  }
+
+  /**
+   * Fetch the list of participants in a group thread.
+   *
+   * The Chat SDK has no group-membership concept. Use this to get the full
+   * participant list including admin status.
+   *
+   * Throws if the thread is not a group.
+   *
+   * @example
+   * ```typescript
+   * const participants = await whatsapp.fetchGroupParticipants(thread.threadId);
+   * const admins = participants.filter(p => p.isAdmin);
+   * await thread.post(`Admins: ${admins.map(p => p.userId).join(", ")}`);
+   * ```
+   */
+  async fetchGroupParticipants(
+    threadId: string
+  ): Promise<BaileysGroupParticipant[]> {
+    const { jid } = this.decodeThreadId(threadId);
+    if (!isJidGroup(jid)) {
+      throw new ValidationError(
+        "baileys",
+        "fetchGroupParticipants: thread is not a group"
+      );
+    }
+    const socket = this._requireSocket();
+    const meta = await socket.groupMetadata(jid);
+    return meta.participants.map((p) => ({
+      userId: p.id,
+      isAdmin: p.admin === "admin" || p.admin === "superadmin",
+      isSuperAdmin: p.admin === "superadmin",
+    }));
   }
 
   private _toRawMessage(

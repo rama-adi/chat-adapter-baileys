@@ -8,6 +8,7 @@ Related docs:
 - [Events And Lifecycle](./events-and-lifecycle.md)
 - [Thread IDs And Multi-Account](./thread-ids-and-multi-account.md)
 - [Formatting And Media](./formatting-and-media.md)
+- [Extensions](./extensions.md)
 - [Runnable Example](./example.ts)
 
 ---

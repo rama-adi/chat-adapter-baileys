@@ -137,6 +137,21 @@ createBaileysAdapter({
 });
 ```
 
+## WhatsApp Extensions
+
+`BaileysAdapter` exposes extra methods for WhatsApp features that have no equivalent in the Chat SDK interface. Call these directly on the adapter instance:
+
+| Method | Description |
+|---|---|
+| `whatsapp.reply(message, text)` | Send a quoted reply (native WhatsApp reply bubble) |
+| `whatsapp.markRead(threadId, messageIds)` | Send read receipts (blue double-ticks) |
+| `whatsapp.setPresence("available" \| "unavailable")` | Set bot's global online/offline status |
+| `whatsapp.sendLocation(threadId, lat, lon, options?)` | Send a native location pin |
+| `whatsapp.sendPoll(threadId, question, options, selectableCount?)` | Send a WhatsApp poll |
+| `whatsapp.fetchGroupParticipants(threadId)` | List group members with admin roles |
+
+See [Extensions](./docs/extensions.md) for full documentation and examples.
+
 ## Behavior Notes
 
 - **Transport**: WebSocket-based (`connect()`), not HTTP webhooks. `handleWebhook()` returns `501`.
@@ -161,6 +176,7 @@ pnpm build
 - [Events And Lifecycle](./docs/events-and-lifecycle.md) — connection lifecycle, auth flows, reconnect behavior
 - [Thread IDs And Multi-Account](./docs/thread-ids-and-multi-account.md) — thread ID format and multi-account setup
 - [Formatting And Media](./docs/formatting-and-media.md) — text formatting and media attachment handling
+- [Extensions](./docs/extensions.md) — WhatsApp-specific features beyond the Chat SDK interface
 
 ## License
 

@@ -7,6 +7,16 @@ export interface BaileysThreadId {
   jid: string;
 }
 
+/** A participant returned by {@link BaileysAdapter.fetchGroupParticipants} */
+export interface BaileysGroupParticipant {
+  /** The participant's JID, e.g. `"15551234567@s.whatsapp.net"` */
+  userId: string;
+  /** True for both admin and super-admin roles */
+  isAdmin: boolean;
+  /** True only for the group creator (super-admin) */
+  isSuperAdmin: boolean;
+}
+
 /** Configuration for the Baileys adapter */
 export interface BaileysAdapterConfig {
   /**

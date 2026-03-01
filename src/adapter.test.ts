@@ -20,6 +20,7 @@ const { mockSocket, mockMakeWASocket } = vi.hoisted(() => {
     sendMessage: vi.fn(),
     groupMetadata: vi.fn(),
     sendPresenceUpdate: vi.fn(),
+    readMessages: vi.fn(),
     end: vi.fn(),
     requestPairingCode: vi.fn(),
   };
@@ -586,6 +587,155 @@ describe("BaileysAdapter", () => {
       });
     });
 
+    // ── reply (extension) ─────────────────────────────────────────────────────
+
+    describe("reply (WhatsApp extension)", () => {
+      it("sends sendMessage with the quoted raw message", async () => {
+        const raw = makeDMMessage();
+        const message = adapter.parseMessage(raw);
+        await adapter.reply(message, "Got it!");
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { text: "Got it!" },
+          { quoted: raw }
+        );
+      });
+
+      it("throws when the message belongs to a different adapter (multi-account guard)", async () => {
+        const otherAdapter = makeAdapter({ adapterName: "baileys-other" });
+        await otherAdapter.initialize(mockChat);
+        // parseMessage on the other adapter stamps its own prefix onto threadId
+        const otherMessage = otherAdapter.parseMessage(makeDMMessage());
+        await expect(adapter.reply(otherMessage, "hi")).rejects.toThrow(/baileys-other/);
+      });
+
+      it("returns a RawMessage with the sent message id", async () => {
+        const raw = makeDMMessage();
+        const message = adapter.parseMessage(raw);
+        const result = await adapter.reply(message, "ack");
+        expect(result.id).toBe("sent-msg-id");
+        expect(result.threadId).toBe(adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" }));
+      });
+    });
+
+    // ── markRead (extension) ──────────────────────────────────────────────────
+
+    describe("markRead (WhatsApp extension)", () => {
+      it("calls socket.readMessages with WAMessageKey objects", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.markRead(threadId, ["msg-1", "msg-2"]);
+        expect(mockSocket.readMessages).toHaveBeenCalledWith([
+          { remoteJid: "15551234567@s.whatsapp.net", id: "msg-1", fromMe: false },
+          { remoteJid: "15551234567@s.whatsapp.net", id: "msg-2", fromMe: false },
+        ]);
+      });
+
+      it("handles an empty messageIds array without error", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.markRead(threadId, []);
+        expect(mockSocket.readMessages).toHaveBeenCalledWith([]);
+      });
+    });
+
+    // ── setPresence (extension) ───────────────────────────────────────────────
+
+    describe("setPresence (WhatsApp extension)", () => {
+      it("calls sendPresenceUpdate with 'available'", async () => {
+        await adapter.setPresence("available");
+        expect(mockSocket.sendPresenceUpdate).toHaveBeenCalledWith("available");
+      });
+
+      it("calls sendPresenceUpdate with 'unavailable'", async () => {
+        await adapter.setPresence("unavailable");
+        expect(mockSocket.sendPresenceUpdate).toHaveBeenCalledWith("unavailable");
+      });
+    });
+
+    // ── sendLocation (extension) ──────────────────────────────────────────────
+
+    describe("sendLocation (WhatsApp extension)", () => {
+      it("sends a location payload with coordinates", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.sendLocation(threadId, 37.7749, -122.4194);
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          {
+            location: {
+              degreesLatitude: 37.7749,
+              degreesLongitude: -122.4194,
+              name: undefined,
+              address: undefined,
+            },
+          }
+        );
+      });
+
+      it("includes name and address when provided", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.sendLocation(threadId, 37.7749, -122.4194, {
+          name: "SF HQ",
+          address: "San Francisco, CA",
+        });
+        const [, payload] = mockSocket.sendMessage.mock.calls[0] as [
+          string,
+          { location: { name?: string; address?: string } },
+        ];
+        expect(payload.location.name).toBe("SF HQ");
+        expect(payload.location.address).toBe("San Francisco, CA");
+      });
+    });
+
+    // ── sendPoll (extension) ──────────────────────────────────────────────────
+
+    describe("sendPoll (WhatsApp extension)", () => {
+      it("sends a poll payload with question and options", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.sendPoll(threadId, "Best time?", ["10am", "2pm", "5pm"]);
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { poll: { name: "Best time?", values: ["10am", "2pm", "5pm"], selectableCount: 1 } }
+        );
+      });
+
+      it("respects a custom selectableCount", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.sendPoll(threadId, "Pick two", ["A", "B", "C"], 2);
+        const [, payload] = mockSocket.sendMessage.mock.calls[0] as [
+          string,
+          { poll: { selectableCount: number } },
+        ];
+        expect(payload.poll.selectableCount).toBe(2);
+      });
+    });
+
+    // ── fetchGroupParticipants (extension) ────────────────────────────────────
+
+    describe("fetchGroupParticipants (WhatsApp extension)", () => {
+      it("returns participants with admin flags from groupMetadata", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
+        mockSocket.groupMetadata.mockResolvedValue({
+          subject: "Test Group",
+          participants: [
+            { id: "a@s.whatsapp.net", admin: "superadmin" },
+            { id: "b@s.whatsapp.net", admin: "admin" },
+            { id: "c@s.whatsapp.net", admin: null },
+          ],
+        });
+        const result = await adapter.fetchGroupParticipants(threadId);
+        expect(result).toHaveLength(3);
+        expect(result[0]).toEqual({ userId: "a@s.whatsapp.net", isAdmin: true, isSuperAdmin: true });
+        expect(result[1]).toEqual({ userId: "b@s.whatsapp.net", isAdmin: true, isSuperAdmin: false });
+        expect(result[2]).toEqual({ userId: "c@s.whatsapp.net", isAdmin: false, isSuperAdmin: false });
+      });
+
+      it("throws a ValidationError when the thread is not a group", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await expect(adapter.fetchGroupParticipants(threadId)).rejects.toThrow(
+          /not a group/
+        );
+      });
+    });
+
     // ── credential update event ───────────────────────────────────────────────
 
     describe("creds.update event", () => {
@@ -707,6 +857,35 @@ describe("BaileysAdapter", () => {
       const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
       await adapter.startTyping(threadId);
       expect(mockSocket.sendPresenceUpdate).not.toHaveBeenCalled();
+    });
+
+    it("reply throws a validation error", async () => {
+      const message = adapter.parseMessage(makeDMMessage());
+      await expect(adapter.reply(message, "hi")).rejects.toThrow();
+    });
+
+    it("markRead throws a validation error", async () => {
+      const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      await expect(adapter.markRead(threadId, ["msg-1"])).rejects.toThrow();
+    });
+
+    it("setPresence throws a validation error", async () => {
+      await expect(adapter.setPresence("available")).rejects.toThrow();
+    });
+
+    it("sendLocation throws a validation error", async () => {
+      const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      await expect(adapter.sendLocation(threadId, 0, 0)).rejects.toThrow();
+    });
+
+    it("sendPoll throws a validation error", async () => {
+      const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      await expect(adapter.sendPoll(threadId, "Q?", ["A", "B"])).rejects.toThrow();
+    });
+
+    it("fetchGroupParticipants throws a validation error", async () => {
+      const threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
+      await expect(adapter.fetchGroupParticipants(threadId)).rejects.toThrow();
     });
   });
 
