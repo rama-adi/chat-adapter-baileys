@@ -41,8 +41,12 @@ export function createBaileysExtensions(...adapters: BaileysAdapter[]) {
       return resolve(message.threadId).reply(message, text);
     },
 
-    async markRead(threadId: string, messageIds: string[]): Promise<void> {
-      return resolve(threadId).markRead(threadId, messageIds);
+    async markRead(
+      threadId: string,
+      messageIds: string[],
+      participant?: string
+    ): Promise<void> {
+      return resolve(threadId).markRead(threadId, messageIds, participant);
     },
 
     /** Sets presence on all registered adapters. */

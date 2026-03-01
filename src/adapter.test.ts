@@ -676,8 +676,25 @@ describe("BaileysAdapter", () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
         await adapter.markRead(threadId, ["msg-1", "msg-2"]);
         expect(mockSocket.readMessages).toHaveBeenCalledWith([
-          { remoteJid: "15551234567@s.whatsapp.net", id: "msg-1", fromMe: false },
-          { remoteJid: "15551234567@s.whatsapp.net", id: "msg-2", fromMe: false },
+          { remoteJid: "15551234567@s.whatsapp.net", id: "msg-1", fromMe: false, participant: undefined },
+          { remoteJid: "15551234567@s.whatsapp.net", id: "msg-2", fromMe: false, participant: undefined },
+        ]);
+      });
+
+      it("includes participant when provided for group read receipts", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
+        await adapter.markRead(
+          threadId,
+          ["msg-1"],
+          "107082225311887@lid"
+        );
+        expect(mockSocket.readMessages).toHaveBeenCalledWith([
+          {
+            remoteJid: "123456789@g.us",
+            id: "msg-1",
+            fromMe: false,
+            participant: "107082225311887@lid",
+          },
         ]);
       });
 

@@ -81,7 +81,11 @@ bot.onSubscribedMessage(async (thread, message) => {
   if (message.author.isMe) return;
 
   // Mark this message as read immediately on receipt
-  await whatsapp.markRead(thread.threadId, [message.id]);
+  await whatsapp.markRead(
+    thread.threadId,
+    [message.id],
+    thread.isDM ? undefined : message.author.userId
+  );
 
   await thread.post("Processing your request...");
 });
@@ -96,9 +100,14 @@ await whatsapp.markRead(thread.threadId, ids);
 
 **Signature:**
 ```ts
-markRead(threadId: string, messageIds: string[]): Promise<void>
+markRead(
+  threadId: string,
+  messageIds: string[],
+  participant?: string
+): Promise<void>
 ```
 
+- `participant` — optional sender JID/LID for group messages. Not needed for DMs.
 - Throws if the socket is not connected.
 
 ---

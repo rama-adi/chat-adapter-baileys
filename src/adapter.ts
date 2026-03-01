@@ -606,14 +606,27 @@ export class BaileysAdapter
    * @example
    * ```typescript
    * bot.onSubscribedMessage(async (thread, message) => {
-   *   await whatsapp.markRead(thread.threadId, [message.id]);
+   *   await whatsapp.markRead(
+   *     thread.threadId,
+   *     [message.id],
+   *     thread.isDM ? undefined : message.author.userId
+   *   );
    * });
    * ```
    */
-  async markRead(threadId: string, messageIds: string[]): Promise<void> {
+  async markRead(
+    threadId: string,
+    messageIds: string[],
+    participant?: string
+  ): Promise<void> {
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
-    const keys = messageIds.map((id) => ({ remoteJid: jid, id, fromMe: false }));
+    const keys = messageIds.map((id) => ({
+      remoteJid: jid,
+      id,
+      fromMe: false,
+      participant,
+    }));
     await socket.readMessages(keys);
   }
 

@@ -37,6 +37,23 @@ vi.mock("baileys", () => ({
   fetchLatestBaileysVersion: vi.fn().mockResolvedValue({ version: [2, 3000, 0] }),
   isJidGroup: (jid: string) => jid.endsWith("@g.us"),
   isJidNewsletter: (jid: string) => jid.endsWith("@newsletter"),
+  normalizeMessageContent: (content: Record<string, any> | undefined) => {
+    if (!content) return undefined;
+    let current = content;
+    for (let i = 0; i < 5; i += 1) {
+      const inner =
+        current.ephemeralMessage ??
+        current.viewOnceMessage ??
+        current.documentWithCaptionMessage ??
+        current.viewOnceMessageV2 ??
+        current.viewOnceMessageV2Extension ??
+        current.editedMessage;
+      if (!inner?.message) break;
+      current = inner.message;
+    }
+    return current;
+  },
+  extractMessageContent: (content: Record<string, any> | undefined) => content,
   makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
   downloadMediaMessage: vi.fn().mockResolvedValue(Buffer.from("mock")),
   generateMessageIDV2: vi.fn(() => "generated-id"),

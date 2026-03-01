@@ -51,7 +51,8 @@ async function handleIncoming(
     logMessage(source, thread, message);
     if (message.author.isMe) return;
     try {
-        await whatsapp.markRead(thread.id, [message.id]);
+        const participant = thread.isDM ? undefined : message.author.userId;
+        await whatsapp.markRead(thread.id, [message.id], participant);
     } catch (error) {
         console.error(`[markRead:error] thread=${thread.id} id=${message.id}`, error);
     }
