@@ -1,6 +1,6 @@
 {
     "name": "chat-adapter-baileys",
-    "version": "1.1.0",
+    "version": "2.0.0",
     "description": "WhatsApp (Baileys) adapter for Chat SDK",
     "type": "module",
     "main": "./dist/index.js",
@@ -24,18 +24,17 @@
         "clean": "rm -rf dist"
     },
     "peerDependencies": {
-        "chat": "^4.0.0"
+        "chat": "^4.24.0"
     },
     "dependencies": {
-        "@chat-adapter/shared": "^4.0.0",
-        "baileys": "7.0.0-rc.9",
-        "mdast": "^3.0.0"
+        "@chat-adapter/shared": "^4.24.0",
+        "baileys": "7.0.0-rc.9"
     },
     "devDependencies": {
-        "@chat-adapter/state-memory": "^4.15.0",
+        "@chat-adapter/state-memory": "^4.24.0",
         "@types/node": "^22.0.0",
         "@vitest/coverage-v8": "^4.0.0",
-        "chat": "^4.0.0",
+        "chat": "^4.24.0",
         "qrcode": "^1.5.4",
         "tsup": "^8.3.0",
         "typescript": "^5.7.0",
