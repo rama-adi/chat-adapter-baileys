@@ -6,6 +6,7 @@ Related docs:
 
 - [Quickstart](./quickstart.md) — basic setup from scratch
 - [Events and lifecycle](./events-and-lifecycle.md) — connection flow and reconnection
+- [Error handling](./error-handling.md) — validation errors and troubleshooting
 
 ---
 
@@ -185,6 +186,29 @@ await bot.postTo(threadId, "Hello! This is an automated message.");
 
 ## Constraints
 
-- `adapterName` must **not** contain `:` — the adapter validates this at construction time and throws if you pass an invalid name
-- Thread IDs from one adapter cannot be used with another adapter, even if `adapterName` is changed later
-- If you change `adapterName` on an existing deployment, all stored thread IDs become invalid
+### adapterName validation
+
+The adapter validates `adapterName` immediately when you create it. If you pass an invalid name, it throws a `ValidationError` before any connection is attempted:
+
+```ts
+// This throws immediately — you can't create the adapter
+createBaileysAdapter({
+  adapterName: "baileys:main",  // ❌ Contains ":"
+  auth: { state, saveCreds },
+});
+// ValidationError: Invalid adapterName "baileys:main". ":" is not allowed.
+```
+
+**Why this matters:** The thread ID format uses `adapterName:encodedJid`, so colons are reserved characters. Use hyphens or underscores instead:
+
+```ts
+adapterName: "baileys-main"  // ✅ Valid
+```
+
+### Thread ID stability
+
+- Thread IDs from one adapter **cannot** be used with another adapter, even if you change the `adapterName` later
+- If you change `adapterName` on an existing deployment, **all stored thread IDs become invalid** — the adapter won't recognize them
+- Thread IDs are stable only as long as `adapterName` stays constant
+
+Store thread IDs in your database only if you're confident the adapter name won't change. If you need to rename an adapter, you'll need to migrate stored thread IDs or have users re-subscribe.

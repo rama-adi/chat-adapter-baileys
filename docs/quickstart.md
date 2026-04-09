@@ -4,11 +4,12 @@ This guide walks you through setting up a Chat SDK bot on WhatsApp using `chat-a
 
 Related docs:
 
-- [Concepts Mapping](./concepts.md)
-- [Events And Lifecycle](./events-and-lifecycle.md)
-- [Thread IDs And Multi-Account](./thread-ids-and-multi-account.md)
-- [Formatting And Media](./formatting-and-media.md)
+- [Concepts](./concepts.md)
+- [Events and lifecycle](./events-and-lifecycle.md)
+- [Thread IDs and multi-account](./thread-ids-and-multi-account.md)
+- [Formatting and media](./formatting-and-media.md)
 - [Extensions](./extensions.md)
+- [Error handling](./error-handling.md)
 - [Runnable Example](./example.ts)
 
 ---
@@ -281,10 +282,82 @@ createBaileysAdapter({
   // Called with the 8-digit pairing code when requested.
   onPairingCode: (code) => { /* ... */ },
 
+  // Logger instance for adapter-specific logging. Inherits from Chat
+  // instance if not provided here.
+  logger: myCustomLogger,
+
   // Advanced: pass extra options directly to Baileys' makeWASocket().
+  // Note: auth and version are managed by the adapter — don't pass those.
   socketOptions: {},
 });
 ```
+
+### When to override the version
+
+The adapter automatically fetches the latest WhatsApp Web version from WhatsApp's servers at startup. You only need to override this if:
+
+- You're pinned to a specific version for stability testing
+- WhatsApp's version endpoint is down and you need a hardcoded fallback
+- You're working in an air-gapped environment
+
+The version is a tuple: `[major, minor, build]` (e.g., `[2, 3000, 1015901307]`).
+
+```ts
+// Pin to a specific version
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  version: [2, 3000, 1015901307],
+});
+```
+
+### Using a custom logger
+
+By default, the adapter uses the logger from your `Chat` instance. You can provide a custom logger for adapter-specific logging:
+
+```ts
+import { ConsoleLogger } from "chat";
+
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  logger: new ConsoleLogger({ level: "debug" }),
+});
+```
+
+The logger is used for:
+- Connection state changes
+- QR code availability
+- Reconnection decisions
+- Error details
+
+### Socket options for advanced use cases
+
+The `socketOptions` object passes through to Baileys' `makeWASocket()` for advanced configuration:
+
+```ts
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  socketOptions: {
+    // Keep-alive settings
+    defaultQueryTimeoutMs: 60000,
+    connectTimeoutMs: 60000,
+    
+    // Message retry configuration
+    retryRequestDelayMs: 1000,
+    maxMsgRetryCount: 5,
+    
+    // Proxy configuration (if behind corporate proxy)
+    // agent: new ProxyAgent("http://proxy.company.com:8080"),
+  },
+});
+```
+
+**Note:** The adapter manages `auth` and `version` internally — don't include those in `socketOptions`. Check the [Baileys documentation](https://github.com/WhiskeySockets/Baileys) for all available socket options.
+
+Common use cases for `socketOptions`:
+- **Longer timeouts** on slow networks
+- **Custom keep-alive intervals** for stability
+- **Proxy configuration** for corporate environments
+- **Custom agent settings** for advanced networking
 
 ---
 

@@ -2,6 +2,13 @@
 
 The `BaileysAdapter` exposes several methods beyond the standard Chat SDK `Adapter` interface. These cover WhatsApp features that have no equivalent in the Chat SDK's platform-agnostic model.
 
+Related docs:
+
+- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Formatting and media](./formatting-and-media.md) — text formatting and file handling
+- [Error handling](./error-handling.md) — validation errors and troubleshooting
+- [Quickstart](./quickstart.md) — getting started with a basic bot
+
 In `v2`, the clean way to reach those methods from Chat SDK handlers is through `thread.adapter` plus one of the exported helpers:
 
 - `isBaileysAdapter(adapter)` — branch on platform with full type narrowing
@@ -309,3 +316,32 @@ fetchGroupParticipants(threadId: string): Promise<BaileysGroupParticipant[]>
 
 - Throws a `ValidationError` if the thread is not a group.
 - Throws if the socket is not connected.
+
+---
+
+## `botUserId` — Your bot's WhatsApp identity
+
+After connecting, this property contains your bot's WhatsApp JID (e.g., `15551234567@s.whatsapp.net`). It's useful for logging, filtering, or when you need to identify which account a message came from in multi-account setups.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const wa = requireBaileysAdapter(thread);
+  
+  // Log which account received this
+  console.log(`Message to ${wa.botUserId}: ${message.text}`);
+  
+  // Filter out messages from yourself (though author.isMe is usually easier)
+  if (message.author.userId === wa.botUserId) {
+    return;
+  }
+});
+```
+
+**Returns:** `string | undefined`
+
+- The bot's JID when connected
+- `undefined` before `connect()` is called or after `disconnect()`
+
+This is a read-only property, not a method.

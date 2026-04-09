@@ -6,6 +6,7 @@ Related docs:
 
 - [Quickstart](./quickstart.md) — basic setup from scratch
 - [Thread IDs and multi-account](./thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
+- [Error handling](./error-handling.md) — validation errors and troubleshooting
 
 ---
 

@@ -2,6 +2,13 @@
 
 The Chat SDK uses a platform-agnostic model (`Thread`, `Channel`, `Message`, etc.) that adapters translate to and from each platform's native concepts. This page explains how those Chat SDK concepts map to WhatsApp's model when using this adapter.
 
+Related docs:
+
+- [Quickstart](./quickstart.md) — getting started from scratch
+- [Extensions](./extensions.md) — WhatsApp-specific methods
+- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — working with multiple accounts
+- [Error handling](./error-handling.md) — validation errors and troubleshooting
+
 ---
 
 ## Thread → WhatsApp conversation (JID)
@@ -126,6 +133,36 @@ Baileys connects to WhatsApp by opening a **persistent outbound WebSocket** to W
 - Incoming messages arrive via the `messages.upsert` Baileys event, which the adapter subscribes to internally.
 
 If you have HTTP server code that routes to `adapter.handleWebhook()`, nothing will break — it just returns 501. To actually receive messages in gateway mode, call `await bot.initialize()` and then `adapter.connect()`.
+
+### What handleWebhook returns
+
+When called, `handleWebhook()` returns a `Response` with:
+
+- **Status:** `501 Not Implemented`
+- **Body:** `{"error":"Baileys adapter does not use HTTP webhooks. Call adapter.connect() to start the WhatsApp WebSocket connection."}`
+- **Content-Type:** `application/json`
+
+This is helpful if you're building a multi-adapter bot that handles both WebSocket adapters (WhatsApp) and HTTP webhook adapters (Slack, Teams):
+
+```ts
+// Express example — works for both webhook and WebSocket adapters
+app.post("/webhook/:adapter", async (req, res) => {
+  const adapter = bot.adapters[req.params.adapter];
+  if (!adapter) return res.status(404).send("Unknown adapter");
+  
+  const response = await adapter.handleWebhook(req);
+  
+  // WhatsApp returns 501 — that's expected
+  if (response.status === 501) {
+    return res.status(200).send("WebSocket adapter — use connect(), not webhooks");
+  }
+  
+  // Webhook adapters return 200 on success
+  res.status(response.status).send(await response.text());
+});
+```
+
+The explicit error message helps developers understand they've mixed up connection models.
 
 ---
 

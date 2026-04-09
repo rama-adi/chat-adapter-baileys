@@ -6,6 +6,7 @@ Related docs:
 
 - [Quickstart](./quickstart.md) — basic setup and sending messages
 - [Extensions](./extensions.md) — WhatsApp-specific methods like location and polls
+- [Error handling](./error-handling.md) — validation errors and troubleshooting
 
 ---
 
@@ -187,3 +188,116 @@ bot.onSubscribedMessage(async (thread, message) => {
 ```
 
 > **Note:** Media URLs on WhatsApp expire. Download attachment data promptly if you need it — don't store the `fetchData` reference and call it later after a long delay.
+
+---
+
+## Using BaileysFormatConverter directly
+
+The adapter uses `BaileysFormatConverter` internally to convert between WhatsApp markup and Chat SDK's AST format. You can access this converter through the adapter if you need custom formatting logic.
+
+### When to use it directly
+
+Most users won't need this — `thread.post()` handles formatting automatically. But you might want direct access for:
+
+- **Testing:** Verify how your markdown renders to WhatsApp format
+- **Preprocessing:** Convert WhatsApp-formatted strings from external sources
+- **Custom rendering:** Build formatted strings programmatically
+
+### Converting WhatsApp to AST
+
+Import `BaileysFormatConverter` directly and use `toAst()` to parse WhatsApp-formatted text into a Chat SDK AST:
+
+```ts
+import { BaileysFormatConverter } from "chat-adapter-baileys";
+
+const converter = new BaileysFormatConverter();
+
+// Parse WhatsApp text to AST
+const ast = converter.toAst("*Bold* and _italic_");
+// Returns Chat SDK AST structure
+
+// Render AST back to WhatsApp format
+const whatsappOutput = converter.fromAst(ast);
+// Returns: "*Bold* and _italic_"
+```
+
+### Converting custom content
+
+The converter extends `BaseFormatConverter` from the Chat SDK, so it can handle any Chat SDK AST structure:
+
+```ts
+import { BaileysFormatConverter } from "chat-adapter-baileys";
+import type { Root } from "chat";
+
+const converter = new BaileysFormatConverter();
+
+// Build an AST programmatically
+const customAst: Root = {
+  type: "root",
+  children: [
+    {
+      type: "paragraph",
+      children: [
+        { type: "text", value: "Check out this " },
+        { type: "strong", children: [{ type: "text", value: "bold" }] },
+        { type: "text", value: " link:" },
+      ],
+    },
+    {
+      type: "paragraph",
+      children: [
+        {
+          type: "link",
+          url: "https://example.com",
+          children: [{ type: "text", value: "Click here" }],
+        },
+      ],
+    },
+  ],
+};
+
+// Convert to WhatsApp format
+const whatsappText = converter.fromAst(customAst);
+// Returns:
+// "Check out this *bold* link:\nClick here (https://example.com)"
+```
+
+### Format conversion reference
+
+The converter handles these mappings:
+
+| WhatsApp input | AST node type | Back to WhatsApp |
+|----------------|---------------|------------------|
+| `*text*` | `strong` | `*text*` |
+| `_text_` | `emphasis` | `_text_` |
+| `~text~` | `delete` | `~text~` |
+| `` `code` `` | `inlineCode` | `` `code` `` |
+| ```` ```code``` ```` | `code` | Triple backticks |
+| `[text](url)` | `link` | `text (url)` |
+| `> quote` | `blockquote` | `> quote` |
+| `- item` | `list` (unordered) | `- item` |
+| `1. item` | `list` (ordered) | `1. item` |
+
+**Note on links:** WhatsApp doesn't support hyperlinks, so the converter renders them as `text (url)` — the URL is preserved but shown in parentheses.
+
+### Testing your formatting
+
+Here's a quick way to test how your markdown will render:
+
+```ts
+import { BaileysFormatConverter } from "chat-adapter-baileys";
+import { parseMarkdown } from "chat";
+
+const converter = new BaileysFormatConverter();
+
+function previewWhatsAppFormat(markdown: string): string {
+  const ast = parseMarkdown(markdown);
+  return converter.fromAst(ast);
+}
+
+// Test it
+console.log(previewWhatsAppFormat("**Bold** and [link](https://example.com)"));
+// Output: "*Bold* and link (https://example.com)"
+```
+
+This is useful for debugging formatting issues or previewing messages before sending them.

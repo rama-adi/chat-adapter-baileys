@@ -6,6 +6,7 @@ Related docs:
 
 - [Extensions](./extensions.md) — how to use WhatsApp-specific methods in v2
 - [Quickstart](./quickstart.md) — setting up a new bot from scratch
+- [Error Handling](../error-handling.md) — validation errors and troubleshooting
 
 ---
 
