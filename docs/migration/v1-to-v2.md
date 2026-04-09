@@ -4,13 +4,13 @@ This guide helps you upgrade from `chat-adapter-baileys` v1.x to v2.x. Version 2
 
 Related docs:
 
-- [Quickstart](../quickstart.md) — setting up a new bot from scratch
-- [Concepts](../concepts.md) — how Chat SDK concepts map to WhatsApp
-- [Events and Lifecycle](../events-and-lifecycle.md) — connection flow and message handling
-- [Thread IDs and Multi-Account](../thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
-- [Extensions](./extensions.md) — how to use WhatsApp-specific methods in v2
-- [Formatting and Media](../formatting-and-media.md) — text formatting and file handling
-- [Error Handling](../error-handling.md) — validation errors and troubleshooting
+- [Quickstart](../v2/quickstart.md) — setting up a new bot from scratch
+- [Concepts](../v2/concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Events and Lifecycle](../v2/events-and-lifecycle.md) — connection flow and message handling
+- [Thread IDs and Multi-Account](../v2/thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
+- [Extensions](../v2/extensions.md) — how to use WhatsApp-specific methods in v2
+- [Formatting and Media](../v2/formatting-and-media.md) — text formatting and file handling
+- [Error Handling](../v2/error-handling.md) — validation errors and troubleshooting
 
 ---
 

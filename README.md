@@ -247,14 +247,15 @@ pnpm build
 
 ## Docs
 
-- [Quickstart](./docs/quickstart.md) — step-by-step setup guide
-- [Runnable Example](./docs/example.ts) — full working bot with commands, media, and reactions
+- [Quickstart](./docs/v2/quickstart.md) — step-by-step setup guide
+- [Runnable Example](./docs/v2/example.ts) — full working bot with commands, media, and reactions
 - [Migration: v1 to v2](./docs/migration/v1-to-v2.md) — breaking changes and upgrade examples
-- [Concepts Mapping](./docs/concepts.md) — how Chat SDK concepts map to WhatsApp
-- [Events And Lifecycle](./docs/events-and-lifecycle.md) — connection lifecycle, auth flows, reconnect behavior
-- [Thread IDs And Multi-Account](./docs/thread-ids-and-multi-account.md) — thread ID format and multi-account setup
-- [Formatting And Media](./docs/formatting-and-media.md) — text formatting and media attachment handling
-- [Extensions](./docs/extensions.md) — WhatsApp-specific features beyond the Chat SDK interface
+- [Concepts Mapping](./docs/v2/concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Events And Lifecycle](./docs/v2/events-and-lifecycle.md) — connection lifecycle, auth flows, reconnect behavior
+- [Thread IDs And Multi-Account](./docs/v2/thread-ids-and-multi-account.md) — thread ID format and multi-account setup
+- [Formatting And Media](./docs/v2/formatting-and-media.md) — text formatting and media attachment handling
+- [Extensions](./docs/v2/extensions.md) — WhatsApp-specific features beyond the Chat SDK interface
+- [Legacy v1 Docs](./docs/v1/) — documentation for v1.x users (archived)
 
 ## License
 

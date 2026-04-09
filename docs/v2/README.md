@@ -31,7 +31,7 @@ New to the adapter? Start here:
 
 ## Migration
 
-- **[Migrating from v1 to v2](./migration/v1-to-v2.md)** — Breaking changes and step-by-step upgrade guide
+- **[Migrating from v1 to v2](../migration/v1-to-v2.md)** — Breaking changes and step-by-step upgrade guide
 
 ---
 

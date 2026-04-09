@@ -10,7 +10,7 @@ Related docs:
 - [Extensions](./extensions.md) — WhatsApp-specific methods
 - [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
 - [Error Handling](./error-handling.md) — validation errors and troubleshooting
-- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
+- [Migrating from v1 to v2](../migration/v1-to-v2.md) — upgrade guide
 
 ---
 

@@ -10,7 +10,7 @@ Related docs:
 - [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — thread ID validation and constraints
 - [Extensions](./extensions.md) — WhatsApp-specific methods with their validation rules
 - [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
-- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
+- [Migrating from v1 to v2](../migration/v1-to-v2.md) — upgrade guide
 
 ---
 

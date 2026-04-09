@@ -10,7 +10,7 @@ Related docs:
 - [Extensions](./extensions.md) — WhatsApp-specific methods like location and polls
 - [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — working with multiple accounts
 - [Error Handling](./error-handling.md) — validation errors and troubleshooting
-- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
+- [Migrating from v1 to v2](../migration/v1-to-v2.md) — upgrade guide
 
 ---
 
