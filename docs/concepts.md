@@ -97,7 +97,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 });
 ```
 
-You can also observe reactions from other users:
+You can also observe reactions from other users using the Chat SDK's `onReaction` handler (the adapter converts WhatsApp reaction events and passes them to the SDK):
 
 ```ts
 bot.onReaction(["👍", "👎"], async (event) => {
@@ -105,6 +105,8 @@ bot.onReaction(["👍", "👎"], async (event) => {
   console.log(`${event.user.userName} ${action} ${event.emoji}`);
 });
 ```
+
+> **Note:** `bot.onReaction()` is a Chat SDK method, not an adapter-specific method. The adapter normalizes WhatsApp's `reactionMessage` payloads and routes them through `chat.processReaction()`.
 
 ---
 

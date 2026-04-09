@@ -109,7 +109,7 @@ const whatsapp = createBaileysAdapter({
 ### Pairing code flow
 
 1. Set `phoneNumber` (E.164 without `+`) and `onPairingCode` in the config
-2. When the socket starts connecting, the adapter calls `socket.requestPairingCode(phoneNumber)`
+2. When the socket starts connecting (or a QR code is emitted), the adapter calls `socket.requestPairingCode(phoneNumber)`
 3. Your `onPairingCode` callback receives the 8-digit code string
 4. The user enters the code in WhatsApp → Settings → Linked Devices → Link with phone number
 5. After linking, credentials are saved and future startups are automatic
@@ -184,14 +184,42 @@ Baileys socket  →  emits "messages.upsert"
 BaileysAdapter._createSocket() event handler
   │  • checks type === "notify"
   │  • skips newsletters and empty messages
-  │  • encodes JID → threadId
-  ▼
-chat.processMessage(adapter, threadId, () => adapter.parseMessage(msg))
-  │  • builds Message object (text, author, attachments, …)
-  │  • checks subscription state
-  ▼
-Your handler fires:
-  bot.onNewMention(...)          ← if bot was @-mentioned in unsubscribed group
-  bot.onSubscribedMessage(...)   ← if thread is subscribed
-  bot.onNewMessage(pattern, ...) ← if message text matches the pattern
+  │  • checks if message is a reaction
+  ├─ is reaction? ──→ chat.processReaction() ──→ bot.onReaction()
+  └─ is message? ────→ encodes JID → threadId
+                        ▼
+                      chat.processMessage(adapter, threadId, () => adapter.parseMessage(msg))
+                        │  • builds Message object (text, author, attachments, …)
+                        │  • checks subscription state
+                        ▼
+                      Your handler fires:
+                        bot.onNewMention(...)          ← if bot was @-mentioned in unsubscribed group
+                        bot.onSubscribedMessage(...)   ← if thread is subscribed
+                        bot.onNewMessage(pattern, ...) ← if message text matches the pattern
 ```
+
+---
+
+## Reaction flow
+
+Reactions are handled separately from regular messages in the `messages.upsert` event:
+
+1. **Detection:** The adapter checks for `reactionMessage` in the message content
+2. **Normalization:** Emoji text is normalized using the Chat SDK's `defaultEmojiResolver`
+3. **Routing:** `chat.processReaction()` dispatches to your `bot.onReaction()` handlers
+
+Your reaction handler receives an event object with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event.added` | `boolean` | `true` if reaction was added, `false` if removed |
+| `event.emoji` | `EmojiValue` | Normalized emoji (e.g., 👍) |
+| `event.messageId` | `string` | ID of the message being reacted to |
+| `event.user` | `Author` | User who reacted |
+| `event.thread` | `Thread` | Thread where the reaction occurred |
+
+```ts
+bot.onReaction(["👍", "👎"], async (event) => {
+  const action = event.added ? "added" : "removed";
+  console.log(`${event.user.userName} ${action} ${event.emoji}`);
+});

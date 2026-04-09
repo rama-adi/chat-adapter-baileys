@@ -114,7 +114,7 @@ When someone sends an image, video, audio message, or file to your bot, the adap
 | `type` | `"image"` \| `"video"` \| `"audio"` \| `"file"` | Media category |
 | `mimeType` | `string` | MIME type (e.g. `"image/jpeg"`, `"video/mp4"`) |
 | `name` | `string` | File name (documents use the original filename; others use the type name) |
-| `fetchData()` | `() => Promise<Buffer>` | Downloads the binary content on demand |
+| `fetchData()` | `(() => Promise<Buffer>) \| undefined` | Downloads the binary content on demand. `undefined` if the socket is disconnected. |
 
 ### Checking for attachments
 

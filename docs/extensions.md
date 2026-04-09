@@ -100,6 +100,8 @@ reply(message: Message<WAMessage>, text: string): Promise<RawMessage<WAMessage>>
 - `text` — the reply text. WhatsApp formatting applies (`*bold*`, `_italic_`, etc.).
 - Throws if the socket is not connected.
 
+> **Multi-account guard:** `reply()` validates that the message belongs to the same adapter instance. In multi-account setups, this prevents accidentally calling `waMain.reply()` with a message that arrived on `waSales`. Use `requireBaileysAdapter(thread)` to always get the correct adapter.
+
 ---
 
 ## `markRead(threadId, messageIds)` — Read receipts
@@ -254,9 +256,9 @@ sendPoll(
 ): Promise<RawMessage<WAMessage>>
 ```
 
-- `question` — the poll question text.
-- `options` — 2–12 option strings.
-- `selectableCount` — how many options a user can select. `1` = single-choice, `>1` = multi-choice, `0` = unlimited.
+- `question` — the poll question text (must be non-empty).
+- `options` — 2–12 option strings (each must be non-empty; whitespace-only is rejected).
+- `selectableCount` — how many options a user can select. `1` = single-choice, `>1` = multi-choice, `0` = unlimited. Must be an integer ≥ 0.
 - Throws if the socket is not connected.
 
 > **Note:** Poll vote events are not yet forwarded through the Chat SDK handler system. You can observe raw Baileys events via `socketOptions` if you need to tally votes.

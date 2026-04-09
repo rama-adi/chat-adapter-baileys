@@ -250,6 +250,43 @@ wa.reply(incompleteMessage, "text");
 
 ---
 
+### Context doesn't belong to a Baileys adapter
+
+**When it happens:** Calling `requireBaileysAdapter()` with a thread or adapter from a different platform (e.g., passing a Slack thread to a WhatsApp adapter).
+
+**Common in:** Multi-adapter bots where handler logic accidentally mixes up adapter types.
+
+```ts
+// Assuming 'thread' came from a Slack adapter, not WhatsApp
+const wa = requireBaileysAdapter(thread);
+// ValidationError: This context does not belong to a Baileys adapter.
+```
+
+**Fix:** Ensure you're using the correct adapter for the context. Use `isBaileysAdapter()` to check first if unsure:
+
+```ts
+if (isBaileysAdapter(thread.adapter)) {
+  const wa = requireBaileysAdapter(thread);
+  // ... use WhatsApp-specific methods
+}
+```
+
+---
+
+### Internal: sendMessage returned no message
+
+**When it happens:** Extremely rare — Baileys' `sendMessage()` returns undefined, usually due to a network or protocol failure.
+
+```ts
+// Rare internal error
+await wa.postMessage(threadId, "Hello");
+// ValidationError: sendMessage returned no message.
+```
+
+**Fix:** This indicates a serious Baileys or network failure. Retry the operation or check your connection. If persistent, check Baileys logs for underlying issues.
+
+---
+
 ## WebSocket errors (not ValidationError)
 
 Baileys emits WebSocket errors that aren't `ValidationError` instances. These indicate network or protocol issues rather than input validation problems.
@@ -349,4 +386,6 @@ if (!attachment.fetchData) {
 | `sendPoll` | `question must not be empty`, `between 2 and 12 options`, `options must not be empty`, `selectableCount must be an integer >= 0` |
 | `fetchGroupParticipants` | `thread is not a group` |
 | `decodeThreadId` | `Invalid Baileys thread ID: X` |
+| `requireBaileysAdapter` | `This context does not belong to a Baileys adapter.` |
+| Internal (`_toRawMessage`) | `sendMessage returned no message.` |
 | All sending methods | `Socket not connected. Call adapter.connect() first.` |

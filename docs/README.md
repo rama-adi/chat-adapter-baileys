@@ -37,20 +37,40 @@ New to the adapter? Start here:
 
 ## Quick Reference
 
-**Common imports:**
+**Package exports:**
 
 ```typescript
-import { createBaileysAdapter } from "chat-adapter-baileys";
+import {
+  createBaileysAdapter,   // Factory function
+  BaileysAdapter,         // Class (for type annotations)
+  BaileysFormatConverter, // Text format converter
+  isBaileysAdapter,       // Type guard
+  requireBaileysAdapter,  // Type assertion
+} from "chat-adapter-baileys";
 import { Chat } from "chat";
+import { createMemoryState } from "@chat-adapter/state-memory";
 import { useMultiFileAuthState } from "baileys";
 ```
 
-**Basic bot structure:**
+**QR code authentication (most common):**
 
 ```typescript
 const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
-const whatsapp = createBaileysAdapter({ auth: { state, saveCreds } });
-const bot = new Chat({ adapters: { whatsapp } });
+
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  userName: "my-bot",
+  onQR: async (qr) => {
+    const QRCode = await import("qrcode");
+    console.log(await QRCode.toString(qr, { type: "terminal" }));
+  },
+});
+
+const bot = new Chat({
+  userName: "my-bot",
+  adapters: { whatsapp },
+  state: createMemoryState(),
+});
 
 bot.onNewMention(async (thread, message) => {
   await thread.post("Hello!");
@@ -59,6 +79,31 @@ bot.onNewMention(async (thread, message) => {
 
 await bot.initialize();
 await whatsapp.connect();
+```
+
+**Pairing code authentication (alternative):**
+
+```typescript
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  userName: "my-bot",
+  phoneNumber: "12345678901",  // E.164 format, no "+"
+  onPairingCode: (code) => {
+    console.log("Enter this code in WhatsApp → Linked Devices:", code);
+  },
+});
+```
+
+**Accessing WhatsApp-specific methods:**
+
+```typescript
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const wa = requireBaileysAdapter(thread);
+  await wa.reply(message, "Got it!");
+  await wa.markRead(thread.threadId, [message.id]);
+});
 ```
 
 ---

@@ -43,7 +43,7 @@ Where:
 | Conversation | JID | Thread ID (default adapterName) |
 |--------------|-----|--------------------------------|
 | DM with +1 555 123 4567 | `15551234567@s.whatsapp.net` | `baileys:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ` |
-| Group chat | `123456789-1000000000@g.us` | `baileys:MTIzNDU2Nzg5LTEwMDAwMDAwMDBAgLnVz` |
+| Group chat | `123456789-1000000000@g.us` | `baileys:MTIzNDU2Nzg5LTEwMDAwMDAwMDBAZy51cw` |
 
 You don't construct these by hand. The adapter creates them when messages arrive, and the Chat SDK passes them into your handlers via the `thread` object.
 
