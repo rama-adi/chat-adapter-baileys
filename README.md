@@ -143,7 +143,41 @@ createBaileysAdapter({
 
 ## WhatsApp Extensions
 
-`BaileysAdapter` exposes extra methods for WhatsApp features that have no equivalent in the Chat SDK interface:
+`BaileysAdapter` exposes extra methods for WhatsApp features that have no equivalent in the Chat SDK interface.
+
+Use `isBaileysAdapter()` when you need to branch by platform:
+
+```ts
+import { isBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const adapter = thread.adapter;
+
+  if (isBaileysAdapter(adapter)) {
+    await adapter.markRead(
+      thread.threadId,
+      [message.id],
+      thread.isDM ? undefined : message.author.userId
+    );
+    return;
+  }
+
+  await thread.post("Read receipts are not supported on this platform.");
+});
+```
+
+Use `requireBaileysAdapter()` when the handler requires WhatsApp-specific behavior:
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const wa = requireBaileysAdapter(thread);
+  await wa.reply(message, "Got it!");
+});
+```
+
+The WhatsApp-specific methods stay on the concrete adapter:
 
 | Method | Description |
 |---|---|
@@ -154,15 +188,52 @@ createBaileysAdapter({
 | `whatsapp.sendPoll(threadId, question, options, selectableCount?)` | Send a WhatsApp poll |
 | `whatsapp.fetchGroupParticipants(threadId)` | List group members with admin roles |
 
-For multi-account setups, use `createBaileysExtensions(waMain, waSales)` to get a router that auto-selects the right adapter — no manual routing needed.
-
 See [Extensions](./docs/extensions.md) for full documentation and examples.
+
+## Support Overview
+
+### Chat SDK Base
+
+| Feature | Support |
+|---|---|
+| Post message | ✅ |
+| Edit message | ✅ |
+| Delete message | ✅ |
+| Add reactions | ✅ |
+| Remove reactions | ✅ |
+| Observe reactions | ✅ |
+| Typing indicator | ✅ |
+| DMs | ✅ |
+| Fetch thread info | ✅ |
+| Fetch channel info | ✅ |
+| Post channel message | ✅ |
+| Fetch messages | ⚠️ Returns empty unless you persist your own history |
+| Fetch single message | ❌ |
+| Fetch channel messages | ⚠️ Returns empty unless you persist your own history |
+| List threads | ❌ |
+| Streaming | ❌ |
+| Scheduled messages | ❌ |
+| Slash commands | ❌ |
+| Modals | ❌ |
+| Ephemeral messages | ❌ |
+
+### Baileys Extras
+
+| Feature | Support |
+|---|---|
+| Quoted reply bubble | ✅ `reply(message, text)` |
+| Read receipts | ✅ `markRead(...)` |
+| Global presence | ✅ `setPresence(...)` |
+| Location messages | ✅ `sendLocation(...)` |
+| Polls | ✅ `sendPoll(...)` |
+| Group participant lookup | ✅ `fetchGroupParticipants(...)` |
 
 ## Behavior Notes
 
 - **Transport**: WebSocket-based (`connect()`), not HTTP webhooks. `handleWebhook()` returns `501`.
 - **Message history**: `fetchMessages()` / `fetchChannelMessages()` return empty arrays — WhatsApp has no REST history API. Persist `messages.upsert` events yourself if you need history.
 - **Cards**: Sent as plain-text fallback — WhatsApp has no native card format.
+- **Buttons / rich interactivity**: Not implemented. This adapter stays within ordinary WhatsApp chat behavior rather than simulating Slack-style controls.
 - **Media**: Incoming attachments include a lazy `fetchData()` for on-demand binary download.
 - **Reconnect**: Automatic on unexpected disconnects. Does not reconnect after logout or explicit `disconnect()`.
 
@@ -176,13 +247,15 @@ pnpm build
 
 ## Docs
 
-- [Quickstart](./docs/quickstart.md) — step-by-step setup guide
-- [Runnable Example](./docs/example.ts) — full working bot with commands, media, and reactions
-- [Concepts Mapping](./docs/concepts.md) — how Chat SDK concepts map to WhatsApp
-- [Events And Lifecycle](./docs/events-and-lifecycle.md) — connection lifecycle, auth flows, reconnect behavior
-- [Thread IDs And Multi-Account](./docs/thread-ids-and-multi-account.md) — thread ID format and multi-account setup
-- [Formatting And Media](./docs/formatting-and-media.md) — text formatting and media attachment handling
-- [Extensions](./docs/extensions.md) — WhatsApp-specific features beyond the Chat SDK interface
+- [Quickstart](./docs/v2/quickstart.md) — step-by-step setup guide
+- [Runnable Example](./docs/v2/example.ts) — full working bot with commands, media, and reactions
+- [Migration: v1 to v2](./docs/migration/v1-to-v2.md) — breaking changes and upgrade examples
+- [Concepts Mapping](./docs/v2/concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Events And Lifecycle](./docs/v2/events-and-lifecycle.md) — connection lifecycle, auth flows, reconnect behavior
+- [Thread IDs And Multi-Account](./docs/v2/thread-ids-and-multi-account.md) — thread ID format and multi-account setup
+- [Formatting And Media](./docs/v2/formatting-and-media.md) — text formatting and media attachment handling
+- [Extensions](./docs/v2/extensions.md) — WhatsApp-specific features beyond the Chat SDK interface
+- [Legacy v1 Docs](./docs/v1/) — documentation for v1.x users (archived)
 
 ## License
 

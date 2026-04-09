@@ -1,0 +1,225 @@
+# Events and Lifecycle
+
+Understanding the adapter lifecycle helps you set things up in the right order and handle edge cases like reconnections and auth flows correctly.
+
+Related docs:
+
+- [Quickstart](./quickstart.md) — basic setup from scratch
+- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
+- [Extensions](./extensions.md) — WhatsApp-specific methods
+- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
+- [Error Handling](./error-handling.md) — validation errors and troubleshooting
+- [Migrating from v1 to v2](../migration/v1-to-v2.md) — upgrade guide
+
+---
+
+## Startup sequence
+
+Always follow this order:
+
+```
+1. Prepare auth state          (useMultiFileAuthState or your own store)
+2. Create adapter              (createBaileysAdapter)
+3. Create Chat instance        (new Chat({ adapters: { ... } }))
+4. Register all handlers       (bot.onNewMention, bot.onSubscribedMessage, etc.)
+5. Initialize Chat             (await bot.initialize())
+6. Connect                     (await adapter.connect())
+```
+
+### Why handlers before connect?
+
+`connect()` opens the WebSocket and starts receiving messages immediately. If you register handlers after connecting, any messages that arrive during the gap will be dropped silently. Register everything first, then connect.
+
+```ts
+const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
+
+const whatsapp = createBaileysAdapter({ auth: { state, saveCreds }, userName: "bot" });
+
+const bot = new Chat({
+  userName: "bot",
+  adapters: { whatsapp },
+  state: createMemoryState()
+});
+
+// ✅ Register BEFORE connect
+bot.onNewMention(async (thread, message) => { /* ... */ });
+bot.onSubscribedMessage(async (thread, message) => { /* ... */ });
+
+// ✅ Initialize, then connect LAST
+await bot.initialize();
+await whatsapp.connect();
+```
+
+---
+
+## What happens inside connect()
+
+`connect()` creates a Baileys WebSocket (`makeWASocket`) and attaches three event listeners:
+
+### creds.update
+
+Fires whenever Baileys internally rotates or updates credentials. The adapter calls `saveCreds()` automatically — you don't need to handle this yourself.
+
+### connection.update
+
+Fires on any connection state change. The adapter handles:
+
+- **QR code available** — calls your `onQR` callback with the raw QR string
+- **Pairing code requested** — calls your `onPairingCode` callback once per socket lifetime
+- **Connection opened** — logs "Connected to WhatsApp" and sets the connected flag
+- **Connection closed** — decides whether to reconnect (see below)
+
+### messages.upsert
+
+Fires when new messages arrive. The adapter processes only `type === "notify"` events (real-time incoming messages), filtering out:
+
+- Blank/system messages (`msg.message` is null)
+- Newsletter JIDs (WhatsApp Channels / broadcast lists)
+
+Each valid message is decoded and forwarded to `chat.processMessage()`, which dispatches it to your registered handlers.
+
+---
+
+## Auth flows
+
+### QR code flow
+
+1. On first startup (no saved session), Baileys emits a `qr` field in `connection.update`
+2. The adapter calls your `onQR(qr)` callback — render the QR however you like
+3. The user scans the QR in WhatsApp → Settings → Linked Devices
+4. WhatsApp sends a `restartRequired` (code 515) close event — this is expected. The adapter reconnects automatically to complete the handshake
+5. The session is saved; subsequent startups skip the QR entirely
+
+```ts
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  onQR: async (qr) => {
+    // Print to terminal
+    const QRCode = await import("qrcode");
+    console.log(await QRCode.toString(qr, { type: "terminal" }));
+
+    // Or serve as an image at /qr in your HTTP server
+    // const png = await QRCode.toBuffer(qr);
+    // res.type("image/png").send(png);
+  },
+});
+```
+
+### Pairing code flow
+
+1. Set `phoneNumber` (E.164 without `+`) and `onPairingCode` in the config
+2. When the socket starts connecting (or a QR code is emitted), the adapter calls `socket.requestPairingCode(phoneNumber)`
+3. Your `onPairingCode` callback receives the 8-digit code string
+4. The user enters the code in WhatsApp → Settings → Linked Devices → Link with phone number
+5. After linking, credentials are saved and future startups are automatic
+
+```ts
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  phoneNumber: "12345678901",
+  onPairingCode: (code) => {
+    console.log(`Pairing code: ${code}`);
+    console.log("Enter it in WhatsApp → Linked Devices");
+  },
+});
+```
+
+> **Note:** Do not use both `onQR` and `phoneNumber`/`onPairingCode` together. Choose one authentication method.
+
+---
+
+## Reconnect behavior
+
+The adapter automatically reconnects when the connection drops unexpectedly. The decision is based on the disconnect status code:
+
+| Situation | Status code | Reconnects? |
+|-----------|-------------|-------------|
+| QR scan completed (normal handshake) | `515` (restartRequired) | Yes |
+| Network error / server timeout | varies | Yes |
+| Logged out from WhatsApp app | `401` (loggedOut) | **No** |
+| `adapter.disconnect()` called | — | **No** |
+
+When logged out, you need to delete the saved credentials and restart with a fresh QR scan:
+
+```ts
+import fs from "fs";
+
+function onLoggedOut() {
+  console.warn("Bot was logged out. Delete auth_info/ and restart.");
+  // fs.rmSync("./auth_info", { recursive: true, force: true });
+  // process.exit(1);
+}
+```
+
+---
+
+## Disconnecting cleanly
+
+Call `disconnect()` when shutting down gracefully — for example, in a SIGTERM handler:
+
+```ts
+process.on("SIGTERM", async () => {
+  console.log("Shutting down...");
+  await whatsapp.disconnect();
+  process.exit(0);
+});
+```
+
+`disconnect()` closes the socket immediately and sets the `_shouldReconnect` flag to false, so no automatic reconnect is attempted.
+
+---
+
+## Message flow
+
+Here's exactly what happens when a WhatsApp user sends a message to your bot:
+
+```
+WhatsApp server
+  │  (WebSocket frame)
+  ▼
+Baileys socket  →  emits "messages.upsert"
+  │
+  ▼
+BaileysAdapter._createSocket() event handler
+  │  • checks type === "notify"
+  │  • skips newsletters and empty messages
+  │  • checks if message is a reaction
+  ├─ is reaction? ──→ chat.processReaction() ──→ bot.onReaction()
+  └─ is message? ────→ encodes JID → threadId
+                        ▼
+                      chat.processMessage(adapter, threadId, () => adapter.parseMessage(msg))
+                        │  • builds Message object (text, author, attachments, …)
+                        │  • checks subscription state
+                        ▼
+                      Your handler fires:
+                        bot.onNewMention(...)          ← if bot was @-mentioned in unsubscribed group
+                        bot.onSubscribedMessage(...)   ← if thread is subscribed
+                        bot.onNewMessage(pattern, ...) ← if message text matches the pattern
+```
+
+---
+
+## Reaction flow
+
+Reactions are handled separately from regular messages in the `messages.upsert` event:
+
+1. **Detection:** The adapter checks for `reactionMessage` in the message content
+2. **Normalization:** Emoji text is normalized using the Chat SDK's `defaultEmojiResolver`
+3. **Routing:** `chat.processReaction()` dispatches to your `bot.onReaction()` handlers
+
+Your reaction handler receives an event object with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event.added` | `boolean` | `true` if reaction was added, `false` if removed |
+| `event.emoji` | `EmojiValue` | Normalized emoji (e.g., 👍) |
+| `event.messageId` | `string` | ID of the message being reacted to |
+| `event.user` | `Author` | User who reacted |
+| `event.thread` | `Thread` | Thread where the reaction occurred |
+
+```ts
+bot.onReaction(["👍", "👎"], async (event) => {
+  const action = event.added ? "added" : "removed";
+  console.log(`${event.user.userName} ${action} ${event.emoji}`);
+});

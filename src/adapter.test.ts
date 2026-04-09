@@ -122,6 +122,31 @@ function makeGroupMessage(overrides?: Partial<WAMessage>): WAMessage {
   } as WAMessage;
 }
 
+function makeReactionMessage(overrides?: Partial<WAMessage>): WAMessage {
+  return {
+    key: {
+      remoteJid: "123456789@g.us",
+      id: "reaction-msg-1",
+      fromMe: false,
+      participant: "15559876543@s.whatsapp.net",
+    },
+    message: {
+      reactionMessage: {
+        key: {
+          remoteJid: "123456789@g.us",
+          id: "target-msg-1",
+          fromMe: false,
+          participant: "15550001111@s.whatsapp.net",
+        },
+        text: "👍",
+      },
+    },
+    pushName: "Alice",
+    messageTimestamp: 1700000002,
+    ...overrides,
+  } as WAMessage;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -556,6 +581,30 @@ describe("BaileysAdapter", () => {
           }
         );
       });
+
+      it("includes participant when reacting to a group message", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
+        await adapter.addReaction(
+          threadId,
+          "msg-id",
+          "👍",
+          "15559876543@s.whatsapp.net"
+        );
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "123456789@g.us",
+          {
+            react: {
+              text: "👍",
+              key: {
+                remoteJid: "123456789@g.us",
+                id: "msg-id",
+                fromMe: false,
+                participant: "15559876543@s.whatsapp.net",
+              },
+            },
+          }
+        );
+      });
     });
 
     // ── removeReaction ───────────────────────────────────────────────────────
@@ -570,6 +619,30 @@ describe("BaileysAdapter", () => {
             react: {
               text: "",
               key: { remoteJid: "15551234567@s.whatsapp.net", id: "msg-id", fromMe: false },
+            },
+          }
+        );
+      });
+
+      it("includes participant when removing a group reaction", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
+        await adapter.removeReaction(
+          threadId,
+          "msg-id",
+          "👍",
+          "15559876543@s.whatsapp.net"
+        );
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "123456789@g.us",
+          {
+            react: {
+              text: "",
+              key: {
+                remoteJid: "123456789@g.us",
+                id: "msg-id",
+                fromMe: false,
+                participant: "15559876543@s.whatsapp.net",
+              },
             },
           }
         );
@@ -641,6 +714,53 @@ describe("BaileysAdapter", () => {
     // ── reply (extension) ─────────────────────────────────────────────────────
 
     describe("reply (WhatsApp extension)", () => {
+      it("marks the incoming message as read before sending the quoted reply", async () => {
+        const raw = makeDMMessage();
+        const message = adapter.parseMessage(raw);
+        await adapter.reply(message, "Got it!");
+
+        expect(mockSocket.readMessages).toHaveBeenCalledWith([
+          {
+            remoteJid: "15551234567@s.whatsapp.net",
+            id: "msg-dm-1",
+            fromMe: false,
+            participant: undefined,
+          },
+        ]);
+        expect(mockSocket.readMessages.mock.invocationCallOrder[0]).toBeLessThan(
+          mockSocket.sendMessage.mock.invocationCallOrder[0]
+        );
+      });
+
+      it("includes the participant when reading a group message before replying", async () => {
+        const raw = makeGroupMessage();
+        const message = adapter.parseMessage(raw);
+        await adapter.reply(message, "Got it!");
+
+        expect(mockSocket.readMessages).toHaveBeenCalledWith([
+          {
+            remoteJid: "123456789@g.us",
+            id: "msg-group-1",
+            fromMe: false,
+            participant: "15559876543@s.whatsapp.net",
+          },
+        ]);
+      });
+
+      it("does not send a read receipt for fromMe messages", async () => {
+        const raw = makeDMMessage({
+          key: {
+            remoteJid: "15551234567@s.whatsapp.net",
+            id: "msg-dm-1",
+            fromMe: true,
+          },
+        });
+        const message = adapter.parseMessage(raw);
+        await adapter.reply(message, "Got it!");
+
+        expect(mockSocket.readMessages).not.toHaveBeenCalled();
+      });
+
       it("sends sendMessage with the quoted raw message", async () => {
         const raw = makeDMMessage();
         const message = adapter.parseMessage(raw);
@@ -666,6 +786,14 @@ describe("BaileysAdapter", () => {
         const result = await adapter.reply(message, "ack");
         expect(result.id).toBe("sent-msg-id");
         expect(result.threadId).toBe(adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" }));
+      });
+
+      it("throws when the parsed threadId and raw JID do not match", async () => {
+        const raw = makeDMMessage();
+        const message = adapter.parseMessage(raw);
+        message.threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
+
+        await expect(adapter.reply(message, "ack")).rejects.toThrow(/threadId does not match/);
       });
     });
 
@@ -701,7 +829,7 @@ describe("BaileysAdapter", () => {
       it("handles an empty messageIds array without error", async () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
         await adapter.markRead(threadId, []);
-        expect(mockSocket.readMessages).toHaveBeenCalledWith([]);
+        expect(mockSocket.readMessages).not.toHaveBeenCalled();
       });
     });
 
@@ -751,6 +879,16 @@ describe("BaileysAdapter", () => {
         expect(payload.location.name).toBe("SF HQ");
         expect(payload.location.address).toBe("San Francisco, CA");
       });
+
+      it("rejects invalid latitude values", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await expect(adapter.sendLocation(threadId, 91, 0)).rejects.toThrow(/latitude/);
+      });
+
+      it("rejects invalid longitude values", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await expect(adapter.sendLocation(threadId, 0, 181)).rejects.toThrow(/longitude/);
+      });
     });
 
     // ── sendPoll (extension) ──────────────────────────────────────────────────
@@ -773,6 +911,21 @@ describe("BaileysAdapter", () => {
           { poll: { selectableCount: number } },
         ];
         expect(payload.poll.selectableCount).toBe(2);
+      });
+
+      it("rejects polls with fewer than 2 options", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await expect(adapter.sendPoll(threadId, "Q?", ["A"])).rejects.toThrow(/between 2 and 12 options/);
+      });
+
+      it("rejects empty poll options", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await expect(adapter.sendPoll(threadId, "Q?", ["A", " "])).rejects.toThrow(/must not be empty/);
+      });
+
+      it("rejects negative selectableCount values", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await expect(adapter.sendPoll(threadId, "Q?", ["A", "B"], -1)).rejects.toThrow(/selectableCount/);
       });
     });
 
@@ -862,6 +1015,57 @@ describe("BaileysAdapter", () => {
     // ── messages.upsert event ─────────────────────────────────────────────────
 
     describe("messages.upsert event", () => {
+      it("forwards reaction messages to chat.processReaction", async () => {
+        await capturedEvHandler!({
+          "messages.upsert": { messages: [makeReactionMessage()], type: "notify" },
+        });
+
+        expect(mockChat.processReaction).toHaveBeenCalledWith(
+          expect.objectContaining({
+            adapter,
+            added: true,
+            messageId: "target-msg-1",
+            rawEmoji: "👍",
+            threadId: adapter.encodeThreadId({ jid: "123456789@g.us" }),
+            user: expect.objectContaining({
+              userId: "15559876543@s.whatsapp.net",
+              userName: "Alice",
+            }),
+          })
+        );
+        expect(mockChat.processMessage).not.toHaveBeenCalled();
+      });
+
+      it("treats empty reaction text as a reaction removal", async () => {
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makeReactionMessage({
+                message: {
+                  reactionMessage: {
+                    key: {
+                      remoteJid: "123456789@g.us",
+                      id: "target-msg-1",
+                      fromMe: false,
+                      participant: "15550001111@s.whatsapp.net",
+                    },
+                    text: "",
+                  },
+                },
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processReaction).toHaveBeenCalledWith(
+          expect.objectContaining({
+            added: false,
+            rawEmoji: "",
+          })
+        );
+      });
+
       it("calls chat.processMessage for each notify message", async () => {
         await capturedEvHandler!({
           "messages.upsert": { messages: [makeDMMessage()], type: "notify" },
