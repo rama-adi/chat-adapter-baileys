@@ -1,12 +1,16 @@
-# Events and lifecycle
+# Events and Lifecycle
 
 Understanding the adapter lifecycle helps you set things up in the right order and handle edge cases like reconnections and auth flows correctly.
 
 Related docs:
 
 - [Quickstart](./quickstart.md) — basic setup from scratch
-- [Thread IDs and multi-account](./thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
-- [Error handling](./error-handling.md) — validation errors and troubleshooting
+- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
+- [Extensions](./extensions.md) — WhatsApp-specific methods
+- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
+- [Error Handling](./error-handling.md) — validation errors and troubleshooting
+- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
 
 ---
 
@@ -121,7 +125,7 @@ const whatsapp = createBaileysAdapter({
 });
 ```
 
-> **Note:** Use either `onQR` or `phoneNumber`/`onPairingCode`, not both.
+> **Note:** Do not use both `onQR` and `phoneNumber`/`onPairingCode` together. Choose one authentication method.
 
 ---
 

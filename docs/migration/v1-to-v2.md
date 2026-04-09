@@ -1,11 +1,15 @@
 # Migrating from v1 to v2
 
-This guide helps you upgrade from `chat-adapter-baileys` v1.x to v2.x. Version 2 keeps the adapter focused on normal WhatsApp behavior, removes the old out-of-band extension router, and tightens a few transport behaviors that were too loose for an unofficial client.
+This guide helps you upgrade from `chat-adapter-baileys` v1.x to v2.x. Version 2 keeps the adapter focused on normal WhatsApp behavior, removes the old out-of-band extension router, and tightens a few transport behaviors that were too loose for an unofficial API client.
 
 Related docs:
 
+- [Quickstart](../quickstart.md) — setting up a new bot from scratch
+- [Concepts](../concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Events and Lifecycle](../events-and-lifecycle.md) — connection flow and message handling
+- [Thread IDs and Multi-Account](../thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
 - [Extensions](./extensions.md) — how to use WhatsApp-specific methods in v2
-- [Quickstart](./quickstart.md) — setting up a new bot from scratch
+- [Formatting and Media](../formatting-and-media.md) — text formatting and file handling
 - [Error Handling](../error-handling.md) — validation errors and troubleshooting
 
 ---

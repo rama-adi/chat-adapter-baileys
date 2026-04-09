@@ -1,12 +1,16 @@
-# Formatting and media
+# Formatting and Media
 
 This guide covers how text formatting and media work when sending and receiving messages through the WhatsApp adapter.
 
 Related docs:
 
 - [Quickstart](./quickstart.md) — basic setup and sending messages
+- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Events and Lifecycle](./events-and-lifecycle.md) — connection flow and message handling
 - [Extensions](./extensions.md) — WhatsApp-specific methods like location and polls
-- [Error handling](./error-handling.md) — validation errors and troubleshooting
+- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — working with multiple accounts
+- [Error Handling](./error-handling.md) — validation errors and troubleshooting
+- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
 
 ---
 

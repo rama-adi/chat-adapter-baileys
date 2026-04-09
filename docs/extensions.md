@@ -4,12 +4,15 @@ The `BaileysAdapter` exposes several methods beyond the standard Chat SDK `Adapt
 
 Related docs:
 
-- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
-- [Formatting and media](./formatting-and-media.md) — text formatting and file handling
-- [Error handling](./error-handling.md) — validation errors and troubleshooting
 - [Quickstart](./quickstart.md) — getting started with a basic bot
+- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Events and Lifecycle](./events-and-lifecycle.md) — connection flow and message handling
+- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — working with multiple accounts
+- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
+- [Error Handling](./error-handling.md) — validation errors and troubleshooting
+- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
 
-In `v2`, the clean way to reach those methods from Chat SDK handlers is through `thread.adapter` plus one of the exported helpers:
+In `v2`, the clean way to access these methods from Chat SDK handlers is through `thread.adapter` plus one of the exported helpers:
 
 - `isBaileysAdapter(adapter)` — branch on platform with full type narrowing
 - `requireBaileysAdapter(thread)` — assert that the current context is WhatsApp and get the concrete adapter

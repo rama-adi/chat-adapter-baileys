@@ -1,12 +1,16 @@
-# Thread IDs and multi-account
+# Thread IDs and Multi-Account
 
 Thread IDs uniquely identify conversations in the Chat SDK. This guide explains how they're formed from WhatsApp JIDs, why the `adapterName` prefix matters, and how to run multiple WhatsApp accounts in one bot.
 
 Related docs:
 
 - [Quickstart](./quickstart.md) — basic setup from scratch
-- [Events and lifecycle](./events-and-lifecycle.md) — connection flow and reconnection
-- [Error handling](./error-handling.md) — validation errors and troubleshooting
+- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
+- [Events and Lifecycle](./events-and-lifecycle.md) — connection flow and reconnection
+- [Extensions](./extensions.md) — WhatsApp-specific methods
+- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
+- [Error Handling](./error-handling.md) — validation errors and troubleshooting
+- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
 
 ---
 

@@ -5,9 +5,12 @@ The Chat SDK uses a platform-agnostic model (`Thread`, `Channel`, `Message`, etc
 Related docs:
 
 - [Quickstart](./quickstart.md) — getting started from scratch
+- [Events and Lifecycle](./events-and-lifecycle.md) — connection flow and message handling
 - [Extensions](./extensions.md) — WhatsApp-specific methods
 - [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — working with multiple accounts
-- [Error handling](./error-handling.md) — validation errors and troubleshooting
+- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
+- [Error Handling](./error-handling.md) — validation errors and troubleshooting
+- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
 
 ---
 
@@ -199,7 +202,7 @@ function getHistory(threadId: string): WAMessage[] {
 
 ## Opening DMs proactively
 
-You can construct a thread ID for a DM and post to it without waiting for the other person to message first:
+You can obtain a thread ID for a DM and post to it without waiting for the other person to message first:
 
 ```ts
 // Get a thread ID for a phone number (E.164 format, no "+")

@@ -5,12 +5,12 @@ This guide walks you through setting up a Chat SDK bot on WhatsApp using `chat-a
 Related docs:
 
 - [Concepts](./concepts.md)
-- [Events and lifecycle](./events-and-lifecycle.md)
-- [Thread IDs and multi-account](./thread-ids-and-multi-account.md)
-- [Formatting and media](./formatting-and-media.md)
+- [Events and Lifecycle](./events-and-lifecycle.md)
+- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md)
+- [Formatting and Media](./formatting-and-media.md)
 - [Extensions](./extensions.md)
-- [Error handling](./error-handling.md)
-- [Runnable Example](./example.ts)
+- [Error Handling](./error-handling.md)
+- [Runnable example](./example.ts)
 
 ---
 
@@ -80,7 +80,7 @@ Once you scan the QR, the session is saved to `./auth_info`. On the next startup
 
 ### Option B — Pairing code flow
 
-If you prefer not to scan a QR, you can link via a 8-digit pairing code instead. Provide your phone number (E.164 without the leading `+`) and an `onPairingCode` callback:
+If you prefer not to scan a QR, you can link via an 8-digit pairing code instead. Provide your phone number (E.164 without the leading `+`) and an `onPairingCode` callback:
 
 ```ts
 const whatsapp = createBaileysAdapter({
@@ -250,7 +250,7 @@ await waSales.connect();
 
 All handlers (`onNewMention`, `onSubscribedMessage`, etc.) fire for messages from either account. The `thread.threadId` prefix tells you which account a message came from.
 
-See [Thread IDs And Multi-Account](./thread-ids-and-multi-account.md) for more detail.
+See [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) for more detail.
 
 ---
 
@@ -386,4 +386,4 @@ For example, if `adapterName` is `"baileys"` and the JID is `15551234567@s.whats
 baileys:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ
 ```
 
-You rarely need to construct these manually — the adapter creates and decodes them for you. See [Thread IDs And Multi-Account](./thread-ids-and-multi-account.md) for details.
+You rarely need to construct these manually — the adapter creates and decodes them for you. See [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) for details.

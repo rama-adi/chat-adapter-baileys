@@ -1,14 +1,16 @@
-# Error handling and validation
+# Error Handling and Validation
 
 This guide explains the errors you might encounter when using the WhatsApp adapter and how to handle them gracefully.
 
 Related docs:
 
 - [Quickstart](./quickstart.md) — basic setup and first bot
-- [Extensions](./extensions.md) — WhatsApp-specific methods with their validation rules
 - [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
 - [Events and Lifecycle](./events-and-lifecycle.md) — connection flow and WebSocket errors
 - [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — thread ID validation and constraints
+- [Extensions](./extensions.md) — WhatsApp-specific methods with their validation rules
+- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
+- [Migrating from v1 to v2](./migration/v1-to-v2.md) — upgrade guide
 
 ---
 
@@ -250,17 +252,32 @@ wa.reply(incompleteMessage, "text");
 
 ## WebSocket errors (not ValidationError)
 
-Baileys emits WebSocket errors that aren't `ValidationError` instances. These indicate network or protocol issues:
+Baileys emits WebSocket errors that aren't `ValidationError` instances. These indicate network or protocol issues rather than input validation problems.
+
+### Common WebSocket error scenarios
+
+| Situation | What happens | How to handle |
+|-----------|--------------|-------------|
+| **Connection dropped unexpectedly** | Baileys auto-reconnects automatically | No action needed — the adapter handles this |
+| **Logged out (status code 401)** | Session invalidated from WhatsApp app | Delete saved credentials and re-authenticate with a fresh QR scan |
+| **Network timeout** | Temporary connection loss | The adapter will retry with exponential backoff |
+| **Server restart (code 515)** | Expected during QR scan handshake | The adapter reconnects automatically to complete authentication |
+
+### Handling logged-out errors
+
+When the bot is logged out from the WhatsApp app (code 401), you need to clear credentials and restart:
 
 ```ts
-// Connection closed unexpectedly
-// Baileys will auto-reconnect unless logged out (code 401)
+import fs from "fs";
 
-// Logged out (code 401) — requires re-authentication
-// You'll see: "Logged out — not reconnecting." in logs
+function onLoggedOut() {
+  console.warn("Bot was logged out. Delete auth_info/ and restart.");
+  fs.rmSync("./auth_info", { recursive: true, force: true });
+  process.exit(1);
+}
 ```
 
-See [Events and Lifecycle](./events-and-lifecycle.md) for reconnection behavior.
+See [Events and Lifecycle](./events-and-lifecycle.md) for detailed reconnection behavior and how to monitor connection state.
 
 ---
 

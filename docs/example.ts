@@ -20,6 +20,12 @@
  *   - Reading and downloading media attachments
  *   - Adding and observing emoji reactions
  *   - Clean shutdown
+ *
+ * See also:
+ *   - quickstart.md — Getting started guide
+ *   - concepts.md — How Chat SDK concepts map to WhatsApp
+ *   - extensions.md — WhatsApp-specific methods
+ *   - error-handling.md — Common errors and how to handle them
  */
 
 import { Chat, type Message } from "chat";
@@ -47,7 +53,7 @@ const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
 const whatsapp = createBaileysAdapter({
   auth: { state, saveCreds },
   userName: "helper-bot",
-  onQR: async (qr) => {
+  onQR: async (qr: string) => {
     const QRCode = await import("qrcode");
     console.log("\nScan this QR code in WhatsApp → Linked Devices:\n");
     console.log(await QRCode.toString(qr, { type: "terminal" }));
