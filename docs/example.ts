@@ -221,9 +221,9 @@ bot.onNewMessage(/.+/, async (thread, message) => {
 // ---------------------------------------------------------------------------
 
 bot.onReaction(["👍", "👎", "✅", "❌"], async (event) => {
-  const action = event.isAdded ? "added" : "removed";
+  const action = event.added ? "added" : "removed";
   console.log(
-    `[reaction] ${event.author.userName} ${action} ${event.emoji} on message ${event.messageId}`
+    `[reaction] ${event.user.userName} ${action} ${event.emoji} on message ${event.messageId}`
   );
 });
 

@@ -1,6 +1,7 @@
 import {
   ConsoleLogger,
   Message,
+  defaultEmojiResolver,
   type Adapter,
   type AdapterPostableMessage,
   type Attachment,
@@ -212,7 +213,23 @@ export class BaileysAdapter
           const jid = msg.key.remoteJid ?? "";
           if (isJidNewsletter(jid)) continue;
 
+          const content = getMessageContent(msg);
+          const reaction = content?.reactionMessage;
           const threadId = this.encodeThreadId({ jid });
+
+          if (reaction && this._chat) {
+            this._chat.processReaction({
+              adapter: this,
+              added: isReactionAdded(reaction.text),
+              emoji: defaultEmojiResolver.fromGChat(reaction.text ?? ""),
+              messageId: reaction.key?.id ?? "",
+              raw: msg,
+              rawEmoji: reaction.text ?? "",
+              threadId,
+              user: buildReactionAuthor(msg, this._socket?.user?.id),
+            });
+            continue;
+          }
 
           this._chat.processMessage(
             this,
@@ -378,23 +395,35 @@ export class BaileysAdapter
   async addReaction(
     threadId: string,
     messageId: string,
-    emoji: EmojiValue | string
+    emoji: EmojiValue | string,
+    participant?: string
   ): Promise<void> {
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
     const text = typeof emoji === "string" ? emoji : emoji.toString();
-    const key: WAMessageKey = { remoteJid: jid, id: messageId, fromMe: false };
+    const key: WAMessageKey = {
+      remoteJid: jid,
+      id: messageId,
+      fromMe: false,
+      participant,
+    };
     await socket.sendMessage(jid, { react: { text, key } });
   }
 
   async removeReaction(
     threadId: string,
     messageId: string,
-    emoji: EmojiValue | string
+    emoji: EmojiValue | string,
+    participant?: string
   ): Promise<void> {
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
-    const key: WAMessageKey = { remoteJid: jid, id: messageId, fromMe: false };
+    const key: WAMessageKey = {
+      remoteJid: jid,
+      id: messageId,
+      fromMe: false,
+      participant,
+    };
     // Empty text removes the reaction
     await socket.sendMessage(jid, { react: { text: "", key } });
   }
@@ -592,7 +621,25 @@ export class BaileysAdapter
     if (!jid) {
       throw new ValidationError("baileys", "reply: message has no remoteJid");
     }
+    if (message.threadId !== this.encodeThreadId({ jid })) {
+      throw new ValidationError(
+        "baileys",
+        "reply: message threadId does not match the quoted message JID"
+      );
+    }
+
     const socket = this._requireSocket();
+
+    // In practice, quoted replies are more reliable when the inbound message
+    // has been acknowledged first, especially for unofficial clients.
+    if (!raw.key.fromMe && raw.key.id) {
+      await this.markRead(
+        message.threadId,
+        [raw.key.id],
+        getParticipantForMessage(raw)
+      );
+    }
+
     const sent = await socket.sendMessage(jid, { text }, { quoted: raw });
     return this._toRawMessage(sent, this.encodeThreadId({ jid }));
   }
@@ -619,6 +666,10 @@ export class BaileysAdapter
     messageIds: string[],
     participant?: string
   ): Promise<void> {
+    if (messageIds.length === 0) {
+      return;
+    }
+
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
     const keys = messageIds.map((id) => ({
@@ -667,6 +718,9 @@ export class BaileysAdapter
     longitude: number,
     options?: { name?: string; address?: string }
   ): Promise<RawMessage<WAMessage>> {
+    assertValidLatitude(latitude);
+    assertValidLongitude(longitude);
+
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
     const sent = await socket.sendMessage(jid, {
@@ -701,6 +755,8 @@ export class BaileysAdapter
     options: string[],
     selectableCount = 1
   ): Promise<RawMessage<WAMessage>> {
+    assertValidPoll(question, options, selectableCount);
+
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
     const sent = await socket.sendMessage(jid, {
@@ -845,4 +901,88 @@ function buildAttachments(
   }
 
   return attachments;
+}
+
+function getParticipantForMessage(msg: WAMessage): string | undefined {
+  const jid = msg.key.remoteJid ?? "";
+  if (!isJidGroup(jid)) {
+    return undefined;
+  }
+
+  return msg.key.participant ?? undefined;
+}
+
+function isReactionAdded(text: string | null | undefined): boolean {
+  return (text ?? "").length > 0;
+}
+
+function buildReactionAuthor(
+  msg: WAMessage,
+  botUserId?: string
+): Author {
+  const jid = msg.key.remoteJid ?? "";
+  const isGroup = isJidGroup(jid);
+  const isMe = msg.key.fromMe ?? false;
+  const userId = isMe
+    ? (botUserId ?? "unknown@s.whatsapp.net")
+    : isGroup
+      ? (msg.key.participant ?? jid)
+      : jid;
+
+  return {
+    userId,
+    userName: msg.pushName ?? userId.split("@")[0],
+    fullName: msg.pushName ?? "",
+    isBot: false,
+    isMe,
+  };
+}
+
+function assertValidLatitude(latitude: number): void {
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+    throw new ValidationError(
+      "baileys",
+      `sendLocation: latitude must be between -90 and 90. Received ${latitude}.`
+    );
+  }
+}
+
+function assertValidLongitude(longitude: number): void {
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    throw new ValidationError(
+      "baileys",
+      `sendLocation: longitude must be between -180 and 180. Received ${longitude}.`
+    );
+  }
+}
+
+function assertValidPoll(
+  question: string,
+  options: string[],
+  selectableCount: number
+): void {
+  if (question.trim().length === 0) {
+    throw new ValidationError("baileys", "sendPoll: question must not be empty.");
+  }
+
+  if (options.length < 2 || options.length > 12) {
+    throw new ValidationError(
+      "baileys",
+      `sendPoll: WhatsApp polls require between 2 and 12 options. Received ${options.length}.`
+    );
+  }
+
+  if (options.some((option) => option.trim().length === 0)) {
+    throw new ValidationError(
+      "baileys",
+      "sendPoll: poll options must not be empty."
+    );
+  }
+
+  if (!Number.isInteger(selectableCount) || selectableCount < 0) {
+    throw new ValidationError(
+      "baileys",
+      `sendPoll: selectableCount must be an integer >= 0. Received ${selectableCount}.`
+    );
+  }
 }
