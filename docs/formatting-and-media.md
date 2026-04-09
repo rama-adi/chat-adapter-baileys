@@ -1,34 +1,41 @@
-# Formatting And Media
+# Formatting and media
+
+This guide covers how text formatting and media work when sending and receiving messages through the WhatsApp adapter.
+
+Related docs:
+
+- [Quickstart](./quickstart.md) — basic setup and sending messages
+- [Extensions](./extensions.md) — WhatsApp-specific methods like location and polls
 
 ---
 
 ## Text formatting
 
-WhatsApp uses its own lightweight markup syntax that differs from standard Markdown. The adapter's `BaileysFormatConverter` handles conversion in both directions:
+WhatsApp uses its own lightweight markup syntax. The adapter's `BaileysFormatConverter` handles conversion in both directions:
 
-- **Inbound** (WhatsApp → Chat SDK): raw WhatsApp-formatted text is parsed into a Chat SDK AST (`message.formatted`).
-- **Outbound** (Chat SDK → WhatsApp): when you call `thread.post(...)`, the Chat SDK content is rendered into WhatsApp-compatible markup before sending.
+- **Inbound** (WhatsApp → Chat SDK): raw WhatsApp-formatted text is parsed into a Chat SDK AST (`message.formatted`)
+- **Outbound** (Chat SDK → WhatsApp): Chat SDK content is rendered into WhatsApp-compatible markup before sending
 
 ### Format mapping
 
 | Chat SDK / Markdown | WhatsApp syntax | Example |
-|---|---|---|
+|---------------------|-----------------|---------|
 | `**bold**` (strong) | `*bold*` | `*Hello*` |
 | `_italic_` (emphasis) | `_italic_` | `_note:_` |
 | `~~strikethrough~~` (delete) | `~strikethrough~` | `~removed~` |
 | `` `code` `` (inline code) | `` `code` `` | `` `null` `` |
-| ` ``` ` code block | ` ``` ` code block | multi-line |
-| `[text](url)` link | `text (url)` plain text | links degrade gracefully |
+| Code block | Code block | Multi-line with triple backticks |
+| `[text](url)` link | Plain text | Links degrade gracefully |
 
 ### Sending formatted text
 
-When you pass a string to `thread.post()`, the Chat SDK treats it as plain text. To send formatted content, use the Chat SDK's rich-text helpers or markdown string:
+When you pass a string to `thread.post()`, the Chat SDK treats it as plain text. To send formatted content, use markdown syntax:
 
 ```ts
 // Plain text — no formatting
 await thread.post("Hello world");
 
-// Markdown string — the adapter converts it to WhatsApp format before sending
+// Markdown string — converted to WhatsApp format automatically
 await thread.post("*Bold* and _italic_ and ~strikethrough~");
 // Sent to WhatsApp as: *Bold* and _italic_ and ~strikethrough~
 
@@ -39,9 +46,14 @@ await thread.post("Use the `start` command to begin.");
 await thread.post("```\nconst x = 1;\nconsole.log(x);\n```");
 ```
 
-### Reading formatted content from incoming messages
+### Reading formatted content
 
-Every incoming `message` object has both `message.text` (plain string) and `message.formatted` (parsed AST). Use `message.text` for simple string matching and `message.formatted` for semantic access to the structure:
+Every incoming `message` object has both:
+
+- `message.text` — plain string
+- `message.formatted` — parsed AST
+
+Use `message.text` for simple string matching and `message.formatted` for semantic access to the structure:
 
 ```ts
 bot.onSubscribedMessage(async (thread, message) => {
@@ -58,11 +70,11 @@ bot.onSubscribedMessage(async (thread, message) => {
 
 ---
 
-## Cards (not natively supported)
+## Cards
 
 The Chat SDK has a `Card` abstraction for structured messages with titles, fields, buttons, and images (like Slack attachments or Teams adaptive cards). WhatsApp's unofficial API does not support this format.
 
-When you send a card, the adapter automatically converts it to a human-readable plain-text fallback:
+When you send a card, the adapter converts it to a human-readable plain-text fallback:
 
 ```ts
 import { Card } from "chat";
@@ -75,7 +87,7 @@ const card = new Card({
   ],
 });
 
-// The adapter renders this as something like:
+// The adapter renders this as:
 // Order #1234
 // Status: Shipped
 // ETA: Tomorrow
@@ -86,14 +98,14 @@ If you need rich formatting on WhatsApp, compose the message as a formatted stri
 
 ---
 
-## Incoming media attachments
+## Incoming media
 
-When someone sends an image, video, audio message, or file to a group or DM that your bot is in, the adapter populates `message.attachments` with metadata and a lazy download function.
+When someone sends an image, video, audio message, or file to your bot, the adapter populates `message.attachments` with metadata and a lazy download function.
 
 ### Attachment fields
 
 | Field | Type | Description |
-|---|---|---|
+|-------|------|-------------|
 | `type` | `"image"` \| `"video"` \| `"audio"` \| `"file"` | Media category |
 | `mimeType` | `string` | MIME type (e.g. `"image/jpeg"`, `"video/mp4"`) |
 | `name` | `string` | File name (documents use the original filename; others use the type name) |
@@ -119,9 +131,9 @@ bot.onSubscribedMessage(async (thread, message) => {
 });
 ```
 
-### Downloading attachment data
+### Downloading attachments
 
-`fetchData()` downloads the binary content from WhatsApp's media servers. Downloads happen lazily — nothing is fetched until you call `fetchData()`. The result is a `Buffer`.
+`fetchData()` downloads the binary content from WhatsApp's media servers. Downloads happen lazily — nothing is fetched until you call it. The result is a `Buffer`.
 
 ```ts
 import fs from "fs/promises";

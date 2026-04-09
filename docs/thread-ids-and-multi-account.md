@@ -1,12 +1,19 @@
-# Thread IDs And Multi-Account
+# Thread IDs and multi-account
+
+Thread IDs uniquely identify conversations in the Chat SDK. This guide explains how they're formed from WhatsApp JIDs, why the `adapterName` prefix matters, and how to run multiple WhatsApp accounts in one bot.
+
+Related docs:
+
+- [Quickstart](./quickstart.md) — basic setup from scratch
+- [Events and lifecycle](./events-and-lifecycle.md) — connection flow and reconnection
 
 ---
 
 ## What is a thread ID?
 
-Every conversation in the Chat SDK is identified by a **thread ID** — a stable string that uniquely identifies a chat across the lifetime of your bot. The adapter generates these IDs from WhatsApp JIDs (Jabber IDs), which are WhatsApp's internal identifiers for conversations.
+A thread ID is a stable string that uniquely identifies a chat across the lifetime of your bot. The adapter generates these from WhatsApp JIDs (Jabber IDs), which are WhatsApp's internal identifiers for conversations.
 
-Thread IDs are used throughout the Chat SDK for:
+Thread IDs are used for:
 
 - Routing messages to the correct handler
 - Tracking subscriptions (`thread.subscribe()` / `thread.unsubscribe()`)
@@ -23,19 +30,19 @@ Thread IDs are used throughout the Chat SDK for:
 
 Where:
 
-- `<adapterName>` — the `adapterName` you passed to `createBaileysAdapter()`, defaulting to `"baileys"`.
-- `<base64url(jid)>` — the WhatsApp JID encoded as Base64URL (no padding, URL-safe characters).
+- `<adapterName>` — the `adapterName` you passed to `createBaileysAdapter()`, defaulting to `"baileys"`
+- `<base64url(jid)>` — the WhatsApp JID encoded as Base64URL (no padding, URL-safe characters)
 
 ### Examples
 
-| Conversation | JID | Thread ID (with default adapterName) |
-|---|---|---|
+| Conversation | JID | Thread ID (default adapterName) |
+|--------------|-----|--------------------------------|
 | DM with +1 555 123 4567 | `15551234567@s.whatsapp.net` | `baileys:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ` |
 | Group chat | `123456789-1000000000@g.us` | `baileys:MTIzNDU2Nzg5LTEwMDAwMDAwMDBAgLnVz` |
 
-You don't normally construct these by hand. The adapter creates them when a message arrives, and the Chat SDK passes them into your handlers via the `thread` object.
+You don't construct these by hand. The adapter creates them when messages arrive, and the Chat SDK passes them into your handlers via the `thread` object.
 
-### Inspecting a thread ID in a handler
+### Inspecting a thread ID
 
 ```ts
 bot.onSubscribedMessage(async (thread, message) => {
@@ -44,28 +51,27 @@ bot.onSubscribedMessage(async (thread, message) => {
   // e.g. "baileys:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ"
 
   // Whether it's a DM or group
-  console.log(thread.isDM);
-  // true for DMs, false for groups
+  console.log(thread.isDM);  // true for DMs, false for groups
 });
 ```
 
 ---
 
-## Why the `adapterName` prefix matters
+## Why the adapterName prefix matters
 
 When you run a single WhatsApp account, all thread IDs start with `"baileys:"` by default and there are no collisions.
 
-When you run **multiple WhatsApp accounts** in one `Chat` instance, two different accounts could have a conversation with the same JID (e.g. both have a DM with `15551234567@s.whatsapp.net`). Without namespacing, those would produce identical thread IDs, causing:
+When you run **multiple WhatsApp accounts** in one `Chat` instance, two different accounts could have a conversation with the same JID (e.g., both have a DM with `15551234567@s.whatsapp.net`). Without namespacing, those would produce identical thread IDs, causing:
 
 - Message routing bugs (messages from one account trigger handlers meant for the other)
 - Subscription state shared across accounts (subscribing in account A accidentally subscribes account B)
-- Dedup keys colliding across accounts
+- Deduplication keys colliding across accounts
 
 By giving each adapter a unique `adapterName`, the thread IDs become:
 
 ```
-baileys-main:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ   ← account A's DM
-baileys-sales:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ  ← account B's DM (same JID, different prefix)
+baileys-main:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ    ← account A's DM
+baileys-sales:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ   ← account B's DM (same JID, different prefix)
 ```
 
 These are treated as completely separate threads.
@@ -75,8 +81,9 @@ These are treated as completely separate threads.
 ## Running multiple accounts
 
 Each account needs:
+
 1. Its own auth state directory (separate `useMultiFileAuthState` folder)
-2. A unique `adapterName` (no `":"` allowed in the name)
+2. A unique `adapterName` (no `:` allowed in the name)
 3. Its own adapter instance
 
 ```ts
@@ -124,7 +131,7 @@ const bot = new Chat({
 
 // Handlers fire for messages from either account
 bot.onNewMention(async (thread, message) => {
-  // Detect which account received this message by looking at the thread ID prefix
+  // Detect which account received this message
   const isMainAccount = thread.threadId.startsWith("baileys-main:");
   const account = isMainAccount ? "main" : "sales";
 
@@ -137,7 +144,7 @@ bot.onSubscribedMessage(async (thread, message) => {
   await thread.post(`Echo from ${thread.threadId.split(":")[0]}: ${message.text}`);
 });
 
-// Initialize Chat once, then connect both accounts (each opens its own WebSocket)
+// Initialize Chat once, then connect both accounts
 await bot.initialize();
 await waMain.connect();
 await waSales.connect();
@@ -145,7 +152,7 @@ await waSales.connect();
 
 ---
 
-## Sending to a known thread ID proactively
+## Sending to a known thread ID
 
 If you have stored a thread ID from a previous session, you can post to it without waiting for an incoming message:
 
@@ -160,7 +167,7 @@ Thread IDs are stable as long as `adapterName` doesn't change — so they're saf
 
 ---
 
-## Opening a DM thread by phone number
+## Opening a DM by phone number
 
 To proactively start a DM with a user whose phone number you know:
 
@@ -178,6 +185,6 @@ await bot.postTo(threadId, "Hello! This is an automated message.");
 
 ## Constraints
 
-- `adapterName` must **not** contain `":"` — the adapter validates this at construction time and throws if you pass an invalid name.
-- Thread IDs from one adapter cannot be used with another adapter, even if `adapterName` is changed later.
-- If you change `adapterName` on an existing deployment, all stored thread IDs become invalid.
+- `adapterName` must **not** contain `:` — the adapter validates this at construction time and throws if you pass an invalid name
+- Thread IDs from one adapter cannot be used with another adapter, even if `adapterName` is changed later
+- If you change `adapterName` on an existing deployment, all stored thread IDs become invalid

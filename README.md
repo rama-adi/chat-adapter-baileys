@@ -249,6 +249,7 @@ pnpm build
 
 - [Quickstart](./docs/quickstart.md) — step-by-step setup guide
 - [Runnable Example](./docs/example.ts) — full working bot with commands, media, and reactions
+- [Migration: v1 to v2](./docs/migration/v1-to-v2.md) — breaking changes and upgrade examples
 - [Concepts Mapping](./docs/concepts.md) — how Chat SDK concepts map to WhatsApp
 - [Events And Lifecycle](./docs/events-and-lifecycle.md) — connection lifecycle, auth flows, reconnect behavior
 - [Thread IDs And Multi-Account](./docs/thread-ids-and-multi-account.md) — thread ID format and multi-account setup
