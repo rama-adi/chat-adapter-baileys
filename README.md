@@ -143,7 +143,41 @@ createBaileysAdapter({
 
 ## WhatsApp Extensions
 
-`BaileysAdapter` exposes extra methods for WhatsApp features that have no equivalent in the Chat SDK interface:
+`BaileysAdapter` exposes extra methods for WhatsApp features that have no equivalent in the Chat SDK interface.
+
+Use `isBaileysAdapter()` when you need to branch by platform:
+
+```ts
+import { isBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const adapter = thread.adapter;
+
+  if (isBaileysAdapter(adapter)) {
+    await adapter.markRead(
+      thread.threadId,
+      [message.id],
+      thread.isDM ? undefined : message.author.userId
+    );
+    return;
+  }
+
+  await thread.post("Read receipts are not supported on this platform.");
+});
+```
+
+Use `requireBaileysAdapter()` when the handler requires WhatsApp-specific behavior:
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const wa = requireBaileysAdapter(thread);
+  await wa.reply(message, "Got it!");
+});
+```
+
+The WhatsApp-specific methods stay on the concrete adapter:
 
 | Method | Description |
 |---|---|
@@ -153,8 +187,6 @@ createBaileysAdapter({
 | `whatsapp.sendLocation(threadId, lat, lon, options?)` | Send a native location pin |
 | `whatsapp.sendPoll(threadId, question, options, selectableCount?)` | Send a WhatsApp poll |
 | `whatsapp.fetchGroupParticipants(threadId)` | List group members with admin roles |
-
-For multi-account setups, use `createBaileysExtensions(waMain, waSales)` to get a router that auto-selects the right adapter — no manual routing needed.
 
 See [Extensions](./docs/extensions.md) for full documentation and examples.
 

@@ -2,7 +2,10 @@
 
 The `BaileysAdapter` exposes several methods beyond the standard Chat SDK `Adapter` interface. These cover WhatsApp features that have no equivalent in the Chat SDK's platform-agnostic model.
 
-Call these methods directly on the adapter instance rather than through `thread.post()` or other Chat SDK helpers.
+In `v2`, the clean way to reach those methods from Chat SDK handlers is through `thread.adapter` plus one of the exported helpers:
+
+- `isBaileysAdapter(adapter)` — branch on platform with full type narrowing
+- `requireBaileysAdapter(thread)` — assert that the current context is WhatsApp and get the concrete adapter
 
 ---
 
@@ -12,31 +15,50 @@ The Chat SDK defines a common interface that works across Slack, Teams, Discord,
 
 Features specific to one platform — like WhatsApp's quoted replies, polls, or location pins — can't be part of the shared interface. Rather than drop them entirely, this adapter exposes them as extra methods on `BaileysAdapter` directly.
 
-The tradeoff: extension calls are WhatsApp-specific. If you ever add a second adapter (e.g. Slack), you'll need to branch on the adapter type or handle those features separately.
+The tradeoff: extension calls are WhatsApp-specific. If you ever add a second adapter (e.g. Slack), branch explicitly on the adapter type or fall back to generic Chat SDK behavior.
 
-## Multi-account
+## Recommended patterns
 
-For single-account setups, call extension methods directly on the adapter instance.
-
-For multi-account setups, use `createBaileysExtensions` to get a router that automatically selects the right adapter based on the thread ID prefix. `setPresence` broadcasts to all accounts.
+Branch by platform:
 
 ```ts
-import { createBaileysAdapter, createBaileysExtensions } from "chat-adapter-baileys";
-
-const waMain = createBaileysAdapter({ adapterName: "baileys-main", auth: authMain });
-const waSales = createBaileysAdapter({ adapterName: "baileys-sales", auth: authSales });
-
-const wa = createBaileysExtensions(waMain, waSales);
+import { isBaileysAdapter } from "chat-adapter-baileys";
 
 bot.onSubscribedMessage(async (thread, message) => {
-  await wa.reply(message, "Got it!");           // routes to the right account
-  await wa.markRead(thread.threadId, [message.id]);
-});
+  const adapter = thread.adapter;
 
-await wa.setPresence("available"); // sets presence on both accounts
+  if (isBaileysAdapter(adapter)) {
+    await adapter.markRead(
+      thread.threadId,
+      [message.id],
+      thread.isDM ? undefined : message.author.userId
+    );
+    return;
+  }
+
+  await thread.post("Read receipts are not supported on this platform.");
+});
 ```
 
-If you pass a thread ID or message that doesn't match any registered adapter, `createBaileysExtensions` throws a descriptive error rather than silently sending from the wrong account.
+Require WhatsApp for the current handler:
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const wa = requireBaileysAdapter(thread);
+  await wa.reply(message, "Got it!");
+});
+```
+
+Multi-account works naturally with these helpers because each `thread` already carries the concrete adapter that received the message. For account-wide actions like presence, keep references to your adapter instances directly:
+
+```ts
+await Promise.all([
+  waMain.setPresence("available"),
+  waSales.setPresence("available"),
+]);
+```
 
 ---
 
@@ -47,15 +69,15 @@ Send a message that quotes a previous message, producing WhatsApp's native reply
 `thread.post()` has no `replyTo` concept — use this method when the visual reply reference matters.
 
 ```ts
-import { createBaileysAdapter } from "chat-adapter-baileys";
-
-const whatsapp = createBaileysAdapter({ /* ... */ });
+import { requireBaileysAdapter } from "chat-adapter-baileys";
 
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.author.isMe) return;
 
+  const wa = requireBaileysAdapter(thread);
+
   // Shows the user's message in a grey bubble above "Got it!"
-  await whatsapp.reply(message, "Got it!");
+  await wa.reply(message, "Got it!");
 });
 ```
 
@@ -77,11 +99,15 @@ Send read receipts for specific messages in a thread. WhatsApp shows blue double
 The Chat SDK has no read-receipt concept — call this directly when you want to explicitly acknowledge that messages have been seen.
 
 ```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.author.isMe) return;
 
+  const wa = requireBaileysAdapter(thread);
+
   // Mark this message as read immediately on receipt
-  await whatsapp.markRead(
+  await wa.markRead(
     thread.threadId,
     [message.id],
     thread.isDM ? undefined : message.author.userId
@@ -95,7 +121,7 @@ You can batch multiple message IDs in one call:
 
 ```ts
 const ids = messages.map(m => m.id);
-await whatsapp.markRead(thread.threadId, ids);
+await requireBaileysAdapter(thread).markRead(thread.threadId, ids);
 ```
 
 **Signature:**
@@ -143,9 +169,11 @@ setPresence(presence: "available" | "unavailable"): Promise<void>
 Send a native WhatsApp location message (shown as an interactive map pin). The Chat SDK has no location type, so this is only available as an extension.
 
 ```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.text.toLowerCase().includes("office")) {
-    await whatsapp.sendLocation(
+    await requireBaileysAdapter(thread).sendLocation(
       thread.threadId,
       37.7749,    // latitude
       -122.4194,  // longitude
@@ -161,7 +189,11 @@ bot.onSubscribedMessage(async (thread, message) => {
 Without a name/address, a bare coordinate pin is sent:
 
 ```ts
-await whatsapp.sendLocation(thread.threadId, 51.5074, -0.1278);
+await requireBaileysAdapter(thread).sendLocation(
+  thread.threadId,
+  51.5074,
+  -0.1278
+);
 ```
 
 **Signature:**
@@ -187,14 +219,14 @@ Send a native WhatsApp poll. Polls let users tap options directly in the chat. T
 
 ```ts
 // Single-choice poll (default)
-await whatsapp.sendPoll(
+await requireBaileysAdapter(thread).sendPoll(
   thread.threadId,
   "When should we hold the team sync?",
   ["Monday 10am", "Wednesday 2pm", "Friday 4pm"]
 );
 
 // Multi-choice poll — users can pick up to 2 options
-await whatsapp.sendPoll(
+await requireBaileysAdapter(thread).sendPoll(
   thread.threadId,
   "Which topics should we cover?",
   ["Design review", "Sprint planning", "Bugs", "Roadmap"],
@@ -226,10 +258,13 @@ sendPoll(
 Fetch the full participant list for a group thread, including admin roles. The Chat SDK has no group-membership concept.
 
 ```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
 bot.onNewMention(async (thread, message) => {
   if (thread.isDM) return;
 
-  const participants = await whatsapp.fetchGroupParticipants(thread.threadId);
+  const participants = await requireBaileysAdapter(thread)
+    .fetchGroupParticipants(thread.threadId);
   const admins = participants.filter(p => p.isAdmin);
   const total = participants.length;
 
@@ -246,7 +281,8 @@ Check if the sender is an admin before allowing privileged commands:
 bot.onSubscribedMessage(async (thread, message) => {
   if (thread.isDM || message.text !== "!shutdown") return;
 
-  const participants = await whatsapp.fetchGroupParticipants(thread.threadId);
+  const participants = await requireBaileysAdapter(thread)
+    .fetchGroupParticipants(thread.threadId);
   const sender = participants.find(p => p.userId === message.author.userId);
 
   if (!sender?.isAdmin) {
