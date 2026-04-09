@@ -91,8 +91,8 @@ You can also observe reactions from other users:
 
 ```ts
 bot.onReaction(["👍", "👎"], async (event) => {
-  const action = event.isAdded ? "reacted with" : "removed";
-  console.log(`${event.author.userName} ${action} ${event.emoji}`);
+  const action = event.added ? "reacted with" : "removed";
+  console.log(`${event.user.userName} ${action} ${event.emoji}`);
 });
 ```
 
