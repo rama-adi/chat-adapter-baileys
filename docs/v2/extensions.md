@@ -72,7 +72,7 @@ await Promise.all([
 
 ---
 
-## `reply(message, text)` — Quoted reply
+## `reply(message, content)` — Quoted reply
 
 Send a message that quotes a previous message, producing WhatsApp's native reply bubble (the grey quoted preview above the new message).
 
@@ -91,13 +91,30 @@ bot.onSubscribedMessage(async (thread, message) => {
 });
 ```
 
+### Replying with attachments
+
+`content` accepts either a plain string or any [`AdapterPostableMessage`](./formatting-and-media.md#sending-attachments) shape, so you can reply with an image, document, audio, or video alongside caption text:
+
+```ts
+await wa.reply(message, {
+  raw: "Here's the chart you asked for",
+  files: [{ data: chartPng, filename: "chart.png", mimeType: "image/png" }],
+});
+```
+
+When the reply includes multiple outgoing items (e.g. one image + one PDF), only the first one carries the quote reference — matching how WhatsApp quotes natively when you send a batch. Caption placement and audio handling follow the same rules as `thread.post()` (see [Sending attachments](./formatting-and-media.md#sending-attachments)).
+
 **Signature:**
 ```ts
-reply(message: Message<WAMessage>, text: string): Promise<RawMessage<WAMessage>>
+reply(
+  message: Message<WAMessage>,
+  content: string | AdapterPostableMessage
+): Promise<RawMessage<WAMessage>>
 ```
 
 - `message` — the `Message` object from a handler; the raw `WAMessage` is used as the quoted context.
-- `text` — the reply text. WhatsApp formatting applies (`*bold*`, `_italic_`, etc.).
+- `content` — either a text string, or a postable object with `raw` / `markdown` / `ast` / `card` plus optional `attachments` and `files`. WhatsApp formatting applies to text (`*bold*`, `_italic_`, etc.).
+- Returns the `RawMessage` of the **first** outgoing message (the one carrying the quote).
 - Throws if the socket is not connected.
 
 > **Multi-account guard:** `reply()` validates that the message belongs to the same adapter instance. In multi-account setups, this prevents accidentally calling `waMain.reply()` with a message that arrived on `waSales`. Use `requireBaileysAdapter(thread)` to always get the correct adapter.

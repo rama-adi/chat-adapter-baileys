@@ -234,7 +234,7 @@ See [Extensions](./docs/extensions.md) for full documentation and examples.
 - **Message history**: `fetchMessages()` / `fetchChannelMessages()` return empty arrays — WhatsApp has no REST history API. Persist `messages.upsert` events yourself if you need history.
 - **Cards**: Sent as plain-text fallback — WhatsApp has no native card format.
 - **Buttons / rich interactivity**: Not implemented. This adapter stays within ordinary WhatsApp chat behavior rather than simulating Slack-style controls.
-- **Media**: Incoming attachments include a lazy `fetchData()` for on-demand binary download.
+- **Media**: Incoming attachments include a lazy `fetchData()` for on-demand binary download. Outgoing `thread.post()` and `reply()` accept the standard Chat SDK `attachments` and `files` fields — images/videos/audio are sent as WhatsApp media, everything else as a document. Captions are auto-attached to the first image/video/document.
 - **Reconnect**: Automatic on unexpected disconnects. Does not reconnect after logout or explicit `disconnect()`.
 
 ## Development

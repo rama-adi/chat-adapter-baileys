@@ -11,6 +11,7 @@ import {
   type EmojiValue,
   type FetchOptions,
   type FetchResult,
+  type FileUpload,
   type FormattedContent,
   type ListThreadsOptions,
   type ListThreadsResult,
@@ -22,6 +23,7 @@ import {
 import {
   ValidationError,
   extractCard,
+  extractFiles,
   cardToFallbackText,
 } from "@chat-adapter/shared";
 import makeWASocket, {
@@ -352,6 +354,15 @@ export class BaileysAdapter
     message: AdapterPostableMessage
   ): Promise<RawMessage<WAMessage>> {
     const { jid } = this.decodeThreadId(threadId);
+    return this._sendPostable(jid, message, threadId);
+  }
+
+  private async _sendPostable(
+    jid: string,
+    message: AdapterPostableMessage,
+    threadId: string,
+    options?: { quoted?: WAMessage }
+  ): Promise<RawMessage<WAMessage>> {
     const socket = this._requireSocket();
 
     const card = extractCard(message);
@@ -359,8 +370,32 @@ export class BaileysAdapter
       ? cardToFallbackText(card)
       : this._converter.renderPostable(message);
 
-    const sent = await socket.sendMessage(jid, { text });
-    return this._toRawMessage(sent, threadId);
+    const media = await buildMediaPayloads(message);
+
+    if (media.length === 0) {
+      const sent = await sendOne(socket, jid, { text }, options);
+      return this._toRawMessage(sent, threadId);
+    }
+
+    const captionIdx = text.length > 0 ? media.findIndex(canCarryCaption) : -1;
+    const payloads: MediaPayload[] = [];
+    if (text.length > 0 && captionIdx === -1) {
+      payloads.push({ text });
+    }
+    media.forEach((m, i) => {
+      payloads.push(i === captionIdx ? { ...m, caption: text } : m);
+    });
+
+    let first: WAMessage | undefined;
+    for (let i = 0; i < payloads.length; i++) {
+      // Only the first send carries the `quoted` reference, matching
+      // WhatsApp's native behaviour where only one message in a batch quotes.
+      const opts = i === 0 ? options : undefined;
+      const sent = await sendOne(socket, jid, payloads[i], opts);
+      if (!first) first = sent ?? undefined;
+    }
+
+    return this._toRawMessage(first, threadId);
   }
 
   async editMessage(
@@ -595,16 +630,26 @@ export class BaileysAdapter
    * The Chat SDK's `thread.post()` has no concept of quoting a specific message.
    * Use this method directly on the adapter when you need the visual reply reference.
    *
+   * Accepts either a plain string or any `AdapterPostableMessage` shape,
+   * including ones with `attachments` / `files`. When attachments are present,
+   * only the first outgoing message carries the quoted reference — matching
+   * WhatsApp's native behaviour.
+   *
    * @example
    * ```typescript
-   * bot.onSubscribedMessage(async (thread, message) => {
-   *   await whatsapp.reply(message, "Got it!");
+   * // text-only reply
+   * await whatsapp.reply(message, "Got it!");
+   *
+   * // reply with an image + caption, all quoting the original
+   * await whatsapp.reply(message, {
+   *   raw: "Here's the screenshot you asked for",
+   *   files: [{ data: buffer, filename: "shot.png", mimeType: "image/png" }],
    * });
    * ```
    */
   async reply(
     message: Message<WAMessage>,
-    text: string
+    content: AdapterPostableMessage
   ): Promise<RawMessage<WAMessage>> {
     // Validate that the message belongs to this adapter instance.
     // This catches accidental cross-account calls in multi-account setups
@@ -628,8 +673,6 @@ export class BaileysAdapter
       );
     }
 
-    const socket = this._requireSocket();
-
     // In practice, quoted replies are more reliable when the inbound message
     // has been acknowledged first, especially for unofficial clients.
     if (!raw.key.fromMe && raw.key.id) {
@@ -640,8 +683,9 @@ export class BaileysAdapter
       );
     }
 
-    const sent = await socket.sendMessage(jid, { text }, { quoted: raw });
-    return this._toRawMessage(sent, this.encodeThreadId({ jid }));
+    return this._sendPostable(jid, content, this.encodeThreadId({ jid }), {
+      quoted: raw,
+    });
   }
 
   /**
@@ -954,6 +998,129 @@ function assertValidLongitude(longitude: number): void {
       `sendLocation: longitude must be between -180 and 180. Received ${longitude}.`
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Media payload helpers
+// ---------------------------------------------------------------------------
+
+type MediaSource = Buffer | { url: string };
+
+type MediaPayload =
+  | { text: string }
+  | { image: MediaSource; mimetype?: string; caption?: string }
+  | { video: MediaSource; mimetype?: string; caption?: string }
+  | { audio: MediaSource; mimetype?: string; ptt?: boolean }
+  | { document: MediaSource; mimetype?: string; fileName?: string; caption?: string };
+
+function canCarryCaption(payload: MediaPayload): boolean {
+  return "image" in payload || "video" in payload || "document" in payload;
+}
+
+/**
+ * Call `socket.sendMessage` while omitting the options arg when not provided.
+ * Keeps the call shape `(jid, payload)` in the common case so existing test
+ * assertions (and Baileys' own argument handling) stay unchanged.
+ */
+async function sendOne(
+  socket: WASocket,
+  jid: string,
+  payload: MediaPayload,
+  options?: { quoted?: WAMessage }
+): Promise<WAMessage | undefined> {
+  const content = payload as Parameters<WASocket["sendMessage"]>[1];
+  if (options) {
+    return socket.sendMessage(jid, content, options);
+  }
+  return socket.sendMessage(jid, content);
+}
+
+function extractAttachments(message: AdapterPostableMessage): Attachment[] {
+  if (typeof message === "string") return [];
+  if ("attachments" in message && Array.isArray(message.attachments)) {
+    return message.attachments;
+  }
+  return [];
+}
+
+async function buildMediaPayloads(
+  message: AdapterPostableMessage
+): Promise<MediaPayload[]> {
+  const attachments = extractAttachments(message);
+  const files = extractFiles(message);
+
+  const payloads: MediaPayload[] = [];
+  for (const att of attachments) {
+    payloads.push(await attachmentToMedia(att));
+  }
+  for (const file of files) {
+    payloads.push(await fileToMedia(file));
+  }
+  return payloads;
+}
+
+async function attachmentToMedia(att: Attachment): Promise<MediaPayload> {
+  const source = await resolveAttachmentSource(att);
+  switch (att.type) {
+    case "image":
+      return { image: source, mimetype: att.mimeType };
+    case "video":
+      return { video: source, mimetype: att.mimeType };
+    case "audio":
+      return { audio: source, mimetype: att.mimeType ?? "audio/ogg" };
+    case "file":
+    default:
+      return {
+        document: source,
+        mimetype: att.mimeType ?? "application/octet-stream",
+        fileName: att.name ?? "document",
+      };
+  }
+}
+
+async function fileToMedia(file: FileUpload): Promise<MediaPayload> {
+  const buffer = await fileDataToBuffer(file.data);
+  const mime = file.mimeType ?? "application/octet-stream";
+  if (mime.startsWith("image/")) {
+    return { image: buffer, mimetype: mime };
+  }
+  if (mime.startsWith("video/")) {
+    return { video: buffer, mimetype: mime };
+  }
+  if (mime.startsWith("audio/")) {
+    return { audio: buffer, mimetype: mime };
+  }
+  return { document: buffer, mimetype: mime, fileName: file.filename };
+}
+
+async function resolveAttachmentSource(att: Attachment): Promise<MediaSource> {
+  if (att.data) {
+    return fileDataToBuffer(att.data);
+  }
+  if (att.fetchData) {
+    return await att.fetchData();
+  }
+  if (att.url) {
+    return { url: att.url };
+  }
+  throw new ValidationError(
+    "baileys",
+    "attachment has no data, fetchData, or url to send"
+  );
+}
+
+async function fileDataToBuffer(
+  data: Buffer | Blob | ArrayBuffer
+): Promise<Buffer> {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (typeof (data as Blob).arrayBuffer === "function") {
+    return Buffer.from(await (data as Blob).arrayBuffer());
+  }
+  throw new ValidationError(
+    "baileys",
+    "unsupported file data type — expected Buffer, ArrayBuffer, or Blob"
+  );
 }
 
 function assertValidPoll(

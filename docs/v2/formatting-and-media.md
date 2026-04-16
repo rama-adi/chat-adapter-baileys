@@ -195,6 +195,179 @@ bot.onSubscribedMessage(async (thread, message) => {
 
 ---
 
+## Sending attachments
+
+`thread.post()` (and the `reply()` extension) accept the standard Chat SDK media fields — `attachments` or `files` — on **any** postable shape: `raw`, `markdown`, `ast`, or `card`. The adapter maps each item to the right Baileys media payload (`image`, `video`, `audio`, or `document`) and derives the caption from whichever text shape you used, so `**Bold**` in `markdown` still renders as WhatsApp's `*Bold*` when attached as a caption.
+
+| Postable shape | `attachments?` | `files?` | Caption source |
+|---|---|---|---|
+| `{ raw: "..." }` | ✓ | ✓ | `raw` passed through |
+| `{ markdown: "..." }` | ✓ | ✓ | rendered to WhatsApp formatting |
+| `{ ast: Root }` | ✓ | ✓ | rendered from the AST |
+| `{ card: ..., files?: ... }` | — | ✓ | card's plain-text fallback |
+
+### How text + media combine
+
+When the message has both text and at least one non-audio attachment:
+
+- The text is attached as a **caption** on the first image/video/document.
+- Any remaining attachments are sent as follow-up messages without captions.
+
+When every attachment is audio (WhatsApp audio doesn't support captions):
+
+- The text is sent first as a standalone message.
+- Each audio attachment follows as its own message.
+
+The returned `RawMessage` is always the **first** message sent, so code that relies on the return value (e.g. `const sent = await thread.post(...); sent.id`) keeps working.
+
+### Sending with `files` (FileUpload)
+
+`files` is the simplest way to attach binary content you already have in memory. The adapter picks the Baileys media type from the `mimeType`:
+
+| `mimeType` prefix | Baileys type |
+|---|---|
+| `image/*` | `image` |
+| `video/*` | `video` |
+| `audio/*` | `audio` |
+| anything else (or missing) | `document` (with `fileName`) |
+
+```ts
+import fs from "fs/promises";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.text !== "/photo") return;
+
+  const data = await fs.readFile("./assets/banner.png");
+
+  await thread.post({
+    raw: "Here's the banner:",
+    files: [
+      { data, filename: "banner.png", mimeType: "image/png" },
+    ],
+  });
+});
+```
+
+Send a PDF as a document:
+
+```ts
+await thread.post({
+  raw: "Latest report attached",
+  files: [
+    { data: pdfBuffer, filename: "report.pdf", mimeType: "application/pdf" },
+  ],
+});
+```
+
+Attach to a markdown message — the caption is rendered to WhatsApp formatting before sending:
+
+```ts
+await thread.post({
+  markdown: "**Heads up:** please review the attached draft.",
+  files: [
+    { data: pdfBuffer, filename: "draft.pdf", mimeType: "application/pdf" },
+  ],
+});
+// Caption on WhatsApp reads: *Heads up:* please review the attached draft.
+```
+
+Cards also accept `files`. The card's plain-text fallback becomes the caption:
+
+```ts
+import { Card } from "chat";
+
+await thread.post({
+  card: new Card({ title: "Order #1234", fields: [{ label: "Status", value: "Shipped" }] }),
+  files: [{ data: labelPdf, filename: "label.pdf", mimeType: "application/pdf" }],
+});
+```
+
+### Sending with `attachments` (Attachment)
+
+`attachments` uses the same shape the adapter populates for **incoming** messages, so you can forward a received attachment straight back out:
+
+```ts
+bot.onSubscribedMessage(async (thread, message) => {
+  for (const inbound of message.attachments) {
+    // Re-send the received media into the same thread.
+    // `fetchData` is called internally to download the bytes.
+    await thread.post({
+      raw: `Echo: ${inbound.name ?? inbound.type}`,
+      attachments: [inbound],
+    });
+  }
+});
+```
+
+`Attachment` supports three data sources, tried in order:
+
+1. `data` — a `Buffer` or `Blob` already in memory
+2. `fetchData()` — a lazy download function (used for inbound attachments)
+3. `url` — a remote URL; Baileys downloads it server-side via `{ image: { url } }`
+
+```ts
+// Send by URL
+await thread.post({
+  raw: "From the CDN:",
+  attachments: [
+    {
+      type: "image",
+      mimeType: "image/jpeg",
+      name: "hero",
+      url: "https://example.com/hero.jpg",
+    },
+  ],
+});
+```
+
+If an attachment has none of `data`, `fetchData`, or `url`, a `ValidationError` is thrown.
+
+### Combining multiple attachments
+
+Multiple attachments become multiple `sendMessage` calls, in the order you provide them:
+
+```ts
+await thread.post({
+  raw: "Two files:",
+  files: [
+    { data: imgBuffer, filename: "chart.png", mimeType: "image/png" },
+    { data: pdfBuffer, filename: "notes.pdf", mimeType: "application/pdf" },
+  ],
+});
+// 1st send: image with caption "Two files:"
+// 2nd send: document "notes.pdf" (no caption)
+```
+
+### Quoted replies with attachments
+
+The `reply()` extension accepts the same postable shapes, so you can send a quoted reply that also carries an attachment. Only the first outgoing message carries the quote reference — matching WhatsApp's native behaviour when sending multiple items back-to-back.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.text !== "/screenshot") return;
+
+  const wa = requireBaileysAdapter(thread);
+  const shot = await takeScreenshot();
+
+  await wa.reply(message, {
+    raw: "Here's what I saw:",
+    files: [{ data: shot, filename: "shot.png", mimeType: "image/png" }],
+  });
+});
+```
+
+See [`reply()`](./extensions.md#replymessage-content--quoted-reply) in the extensions doc for the full signature.
+
+### Limitations
+
+- **`editMessage` is text-only.** WhatsApp can edit a caption in place, but the adapter currently updates only the message text. Editing attachment data isn't supported.
+- **Audio can't carry a caption.** When text is combined with audio-only attachments, the text is sent as a separate preceding message.
+- **URL sources require a publicly reachable URL.** Baileys downloads the URL server-side before sending; local-only URLs won't work.
+
+---
+
 ## Using BaileysFormatConverter directly
 
 The adapter uses `BaileysFormatConverter` internally to convert between WhatsApp markup and Chat SDK's AST format. You can access this converter through the adapter if you need custom formatting logic.

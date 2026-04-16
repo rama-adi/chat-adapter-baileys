@@ -534,6 +534,151 @@ describe("BaileysAdapter", () => {
         expect(payload.text).toContain("*bold*");
         expect(payload.text).not.toMatch(/\*\*bold\*\*/);
       });
+
+      it("sends markdown text as a rendered caption alongside a file", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const data = Buffer.from("img");
+        await adapter.postMessage(threadId, {
+          markdown: "**Bold** caption",
+          files: [{ data, filename: "pic.png", mimeType: "image/png" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(1);
+        const [, payload] = mockSocket.sendMessage.mock.calls[0] as [
+          string,
+          { image: Buffer; mimetype: string; caption: string }
+        ];
+        expect(payload.image).toBe(data);
+        expect(payload.mimetype).toBe("image/png");
+        // WhatsApp bold is *single-star*, not **double-star**
+        expect(payload.caption).toContain("*Bold*");
+        expect(payload.caption).not.toMatch(/\*\*Bold\*\*/);
+      });
+
+      it("sends an image file with the text as caption", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const data = Buffer.from("fake-png");
+        await adapter.postMessage(threadId, {
+          raw: "Look at this",
+          files: [{ data, filename: "pic.png", mimeType: "image/png" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(1);
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { image: data, mimetype: "image/png", caption: "Look at this" }
+        );
+      });
+
+      it("sends non-media files as documents with fileName", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const data = Buffer.from("%PDF-");
+        await adapter.postMessage(threadId, {
+          raw: "Report attached",
+          files: [{ data, filename: "report.pdf", mimeType: "application/pdf" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          {
+            document: data,
+            mimetype: "application/pdf",
+            fileName: "report.pdf",
+            caption: "Report attached",
+          }
+        );
+      });
+
+      it("sends text as a separate message when only audio attachments are present", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const data = Buffer.from("ogg-bytes");
+        await adapter.postMessage(threadId, {
+          raw: "Voice note",
+          files: [{ data, filename: "v.ogg", mimeType: "audio/ogg" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(2);
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          1,
+          "15551234567@s.whatsapp.net",
+          { text: "Voice note" }
+        );
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          2,
+          "15551234567@s.whatsapp.net",
+          { audio: data, mimetype: "audio/ogg" }
+        );
+      });
+
+      it("sends multiple media items, attaching caption to the first caption-compatible item", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const img = Buffer.from("img");
+        const pdf = Buffer.from("pdf");
+        await adapter.postMessage(threadId, {
+          raw: "Two files",
+          files: [
+            { data: img, filename: "a.png", mimeType: "image/png" },
+            { data: pdf, filename: "b.pdf", mimeType: "application/pdf" },
+          ],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(2);
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          1,
+          "15551234567@s.whatsapp.net",
+          { image: img, mimetype: "image/png", caption: "Two files" }
+        );
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          2,
+          "15551234567@s.whatsapp.net",
+          { document: pdf, mimetype: "application/pdf", fileName: "b.pdf" }
+        );
+      });
+
+      it("forwards an Attachment with fetchData (inbound re-send)", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const fetched = Buffer.from("downloaded");
+        const fetchData = vi.fn().mockResolvedValue(fetched);
+        await adapter.postMessage(threadId, {
+          raw: "",
+          attachments: [
+            { type: "image", mimeType: "image/jpeg", name: "x", fetchData },
+          ],
+        });
+        expect(fetchData).toHaveBeenCalledTimes(1);
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { image: fetched, mimetype: "image/jpeg" }
+        );
+      });
+
+      it("sends an Attachment via URL when no binary data is available", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.postMessage(threadId, {
+          raw: "hi",
+          attachments: [
+            {
+              type: "video",
+              mimeType: "video/mp4",
+              name: "clip",
+              url: "https://example.com/clip.mp4",
+            },
+          ],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          {
+            video: { url: "https://example.com/clip.mp4" },
+            mimetype: "video/mp4",
+            caption: "hi",
+          }
+        );
+      });
+
+      it("throws when an attachment has no data, fetchData, or url", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await expect(
+          adapter.postMessage(threadId, {
+            raw: "oops",
+            attachments: [{ type: "image", mimeType: "image/png", name: "x" }],
+          })
+        ).rejects.toThrow(/attachment has no data/);
+      });
     });
 
     // ── editMessage ──────────────────────────────────────────────────────────
@@ -794,6 +939,49 @@ describe("BaileysAdapter", () => {
         message.threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
 
         await expect(adapter.reply(message, "ack")).rejects.toThrow(/threadId does not match/);
+      });
+
+      it("sends a quoted reply with an image + caption when given attachments", async () => {
+        const raw = makeDMMessage();
+        const message = adapter.parseMessage(raw);
+        const data = Buffer.from("png-bytes");
+        await adapter.reply(message, {
+          raw: "Here it is",
+          files: [{ data, filename: "pic.png", mimeType: "image/png" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(1);
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { image: data, mimetype: "image/png", caption: "Here it is" },
+          { quoted: raw }
+        );
+      });
+
+      it("quotes only the first message when replying with multiple attachments", async () => {
+        const raw = makeDMMessage();
+        const message = adapter.parseMessage(raw);
+        const a = Buffer.from("a");
+        const b = Buffer.from("b");
+        await adapter.reply(message, {
+          raw: "two",
+          files: [
+            { data: a, filename: "a.png", mimeType: "image/png" },
+            { data: b, filename: "b.pdf", mimeType: "application/pdf" },
+          ],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(2);
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          1,
+          "15551234567@s.whatsapp.net",
+          { image: a, mimetype: "image/png", caption: "two" },
+          { quoted: raw }
+        );
+        // Second send has no `quoted` third arg
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          2,
+          "15551234567@s.whatsapp.net",
+          { document: b, mimetype: "application/pdf", fileName: "b.pdf" }
+        );
       });
     });
 

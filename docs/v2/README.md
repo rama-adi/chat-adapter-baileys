@@ -22,7 +22,7 @@ New to the adapter? Start here:
 
 ### Messages and Media
 
-- **[Formatting and Media](./formatting-and-media.md)** — Text formatting, cards, downloading media attachments, and the BaileysFormatConverter
+- **[Formatting and Media](./formatting-and-media.md)** — Text formatting, cards, sending and downloading media attachments, and the BaileysFormatConverter
 - **[Extensions](./extensions.md)** — WhatsApp-specific methods: quoted replies, read receipts, location pins, polls, and group participants
 
 ### Error Handling
