@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import type { ChatInstance } from "chat";
 import type { WAMessage } from "baileys";
 import {
@@ -53,6 +54,28 @@ vi.mock("baileys", () => ({
   makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
   downloadMediaMessage: vi.fn().mockResolvedValue(Buffer.from("mock-media")),
   generateMessageIDV2: vi.fn(() => "generated-id"),
+  jidNormalizedUser: (jid: string | undefined) =>
+    (jid ?? "").split(":")[0].split("/")[0] || "",
+  getKeyAuthor: (
+    key: { fromMe?: boolean; participant?: string; remoteJid?: string } | undefined,
+    meId?: string
+  ) => {
+    if (!key) return "";
+    if (key.fromMe) return (meId ?? "").split(":")[0].split("/")[0] || "";
+    if (key.participant) return key.participant.split(":")[0].split("/")[0];
+    return (key.remoteJid ?? "").split(":")[0].split("/")[0];
+  },
+  // Test contract: encPayload is the utf8 bytes of the chosen option name(s),
+  // joined by "|" for multi-select. Returns the SHA256 of each option as the
+  // "selectedOptions" array — matching what the real WhatsApp protocol does.
+  decryptPollVote: vi.fn(({ encPayload }: { encPayload: Uint8Array }) => {
+    const decoded = Buffer.from(encPayload).toString("utf8");
+    if (decoded.length === 0) return { selectedOptions: [] };
+    const names = decoded.split("|");
+    return {
+      selectedOptions: names.map((n) => createHash("sha256").update(n).digest()),
+    };
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -69,10 +92,37 @@ const mockLogger = {
   child: vi.fn().mockReturnThis(),
 };
 
+const stateStore = new Map<string, unknown>();
+const stateLists = new Map<string, unknown[]>();
+const mockState = {
+  get: vi.fn(async <T>(key: string) => (stateStore.get(key) as T) ?? null),
+  set: vi.fn(async (key: string, value: unknown) => {
+    stateStore.set(key, value);
+  }),
+  delete: vi.fn(async (key: string) => {
+    stateStore.delete(key);
+  }),
+  appendToList: vi.fn(
+    async (
+      key: string,
+      value: unknown,
+      options?: { maxLength?: number; ttlMs?: number }
+    ) => {
+      const list = stateLists.get(key) ?? [];
+      list.push(value);
+      if (options?.maxLength && list.length > options.maxLength) {
+        list.splice(0, list.length - options.maxLength);
+      }
+      stateLists.set(key, list);
+    }
+  ),
+  getList: vi.fn(async <T>(key: string) => (stateLists.get(key) as T[]) ?? []),
+};
+
 const mockChat = {
   getLogger: vi.fn(() => mockLogger),
   processMessage: vi.fn(),
-  getState: vi.fn(),
+  getState: vi.fn(() => mockState),
   getUserName: vi.fn(() => "mybot"),
   processAction: vi.fn(),
   processAppHomeOpened: vi.fn(),
@@ -157,6 +207,8 @@ describe("BaileysAdapter", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    stateStore.clear();
+    stateLists.clear();
     capturedEvHandler = null;
 
     mockSocket.ev.process.mockImplementation((handler: EvHandler) => {
@@ -1114,6 +1166,662 @@ describe("BaileysAdapter", () => {
       it("rejects negative selectableCount values", async () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
         await expect(adapter.sendPoll(threadId, "Q?", ["A", "B"], -1)).rejects.toThrow(/selectableCount/);
+      });
+
+      it("persists poll metadata in the SDK state adapter on send", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const secret = Buffer.alloc(32, 7);
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-1", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: {
+            pollCreationMessageV3: {},
+            messageContextInfo: { messageSecret: secret },
+          },
+        });
+
+        await adapter.sendPoll(threadId, "Time?", ["10am", "2pm"]);
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          "baileys:baileys:poll:poll-1",
+          expect.objectContaining({
+            question: "Time?",
+            options: ["10am", "2pm"],
+            messageSecret: secret.toString("base64"),
+          }),
+          30 * 24 * 60 * 60 * 1000
+        );
+      });
+
+      it("warns and skips storage when the sent poll has no messageSecret", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-no-secret", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { pollCreationMessageV3: {} },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+
+        expect(mockState.set).not.toHaveBeenCalled();
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("messageSecret")
+        );
+      });
+
+      it("uses the configured pollTtlMs when provided", async () => {
+        adapter = makeAdapter({ pollTtlMs: 5000 });
+        await adapter.initialize(mockChat);
+        await adapter.connect();
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-ttl", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 1) } },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          expect.stringContaining("poll-ttl"),
+          expect.any(Object),
+          5000
+        );
+      });
+
+      it("treats pollTtlMs=0 as no TTL", async () => {
+        adapter = makeAdapter({ pollTtlMs: 0 });
+        await adapter.initialize(mockChat);
+        await adapter.connect();
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-no-ttl", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 2) } },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.any(Object),
+          undefined
+        );
+      });
+    });
+
+    // ── poll vote handling (pollUpdateMessage) ────────────────────────────────
+
+    describe("poll vote handling (pollUpdateMessage)", () => {
+      async function sendStubbedPoll(opts: {
+        jid: string;
+        pollId: string;
+        question: string;
+        options: string[];
+        secret?: Buffer;
+      }) {
+        const threadId = adapter.encodeThreadId({ jid: opts.jid });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: opts.pollId, remoteJid: opts.jid, fromMe: true },
+          message: {
+            messageContextInfo: { messageSecret: opts.secret ?? Buffer.alloc(32, 9) },
+          },
+        });
+        await adapter.sendPoll(threadId, opts.question, opts.options);
+        return threadId;
+      }
+
+      function makePollVoteMessage(opts: {
+        pollId: string;
+        chosen: string[];
+        remoteJid: string;
+        participant?: string;
+        voterPushName?: string;
+      }): WAMessage {
+        return {
+          key: {
+            remoteJid: opts.remoteJid,
+            id: `vote-${opts.pollId}`,
+            fromMe: false,
+            participant: opts.participant,
+          },
+          message: {
+            pollUpdateMessage: {
+              pollCreationMessageKey: {
+                remoteJid: opts.remoteJid,
+                id: opts.pollId,
+                fromMe: true,
+              },
+              vote: {
+                encPayload: Buffer.from(opts.chosen.join("|"), "utf8"),
+                encIv: Buffer.alloc(12, 0),
+              },
+              senderTimestampMs: 1700000003000,
+            },
+          },
+          pushName: opts.voterPushName ?? "Voter",
+          messageTimestamp: 1700000003,
+        } as WAMessage;
+      }
+
+      it("decrypts a DM vote and routes the chosen option as the message text", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        const threadId = await sendStubbedPoll({
+          jid,
+          pollId: "poll-dm",
+          question: "Time?",
+          options: ["10am", "2pm", "5pm"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-dm",
+                chosen: ["2pm"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).toHaveBeenCalledWith(
+          adapter,
+          threadId,
+          expect.any(Function)
+        );
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ text: string; author: { userId: string } }>,
+        ];
+        const built = await factory();
+        expect(built.text).toBe("2pm");
+        expect(built.author.userId).toBe("15551234567@s.whatsapp.net");
+      });
+
+      it("invokes onPollVote handlers with the structured decrypted payload", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        const threadId = await sendStubbedPoll({
+          jid,
+          pollId: "poll-cb",
+          question: "Pick",
+          options: ["A", "B", "C"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-cb",
+                chosen: ["A", "C"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadId,
+            pollMessageId: "poll-cb",
+            question: "Pick",
+            options: ["A", "B", "C"],
+            selectedOptions: ["A", "C"],
+            voter: expect.objectContaining({ userId: jid }),
+          })
+        );
+      });
+
+      it("filters handlers registered with a specific pollMessageId", async () => {
+        const matchingHandler = vi.fn();
+        const otherHandler = vi.fn();
+        adapter.onPollVote("poll-match", matchingHandler);
+        adapter.onPollVote("poll-other", otherHandler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-match",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-match",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(matchingHandler).toHaveBeenCalledOnce();
+        expect(otherHandler).not.toHaveBeenCalled();
+      });
+
+      it("filters handlers registered with an array of pollMessageIds", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(["poll-a", "poll-b"], handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-b", question: "Q?", options: ["A", "B"] });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({ pollId: "poll-b", chosen: ["A"], remoteJid: jid }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledOnce();
+      });
+
+      it("dispatches to multiple handlers in registration order", async () => {
+        const order: string[] = [];
+        adapter.onPollVote(() => { order.push("first"); });
+        adapter.onPollVote(() => { order.push("second"); });
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-multi", question: "Q?", options: ["A", "B"] });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({ pollId: "poll-multi", chosen: ["A"], remoteJid: jid }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(order).toEqual(["first", "second"]);
+      });
+
+      it("isolates a thrown handler so other handlers still run", async () => {
+        const broken = vi.fn(() => {
+          throw new Error("oops");
+        });
+        const ok = vi.fn();
+        adapter.onPollVote(broken);
+        adapter.onPollVote(ok);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-iso", question: "Q?", options: ["A", "B"] });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({ pollId: "poll-iso", chosen: ["A"], remoteJid: jid }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(broken).toHaveBeenCalledOnce();
+        expect(ok).toHaveBeenCalledOnce();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          expect.stringContaining("handler threw"),
+          expect.any(Error)
+        );
+      });
+
+      it("rejects onPollVote called with a filter but no handler", () => {
+        expect(() => (adapter as unknown as { onPollVote: (x: string) => void }).onPollVote("only-id")).toThrow(
+          /handler is required/
+        );
+      });
+
+      it("uses the participant JID as the voter for group polls", async () => {
+        const groupJid = "123456789@g.us";
+        await sendStubbedPoll({
+          jid: groupJid,
+          pollId: "poll-group",
+          question: "Snack?",
+          options: ["pizza", "tacos"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-group",
+                chosen: ["tacos"],
+                remoteJid: groupJid,
+                participant: "15559876543@s.whatsapp.net",
+                voterPushName: "Alice",
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ text: string; author: { userId: string; userName: string } }>,
+        ];
+        const built = await factory();
+        expect(built.text).toBe("tacos");
+        expect(built.author.userId).toBe("15559876543@s.whatsapp.net");
+        expect(built.author.userName).toBe("Alice");
+      });
+
+      it("emits an empty-text message when the voter cleared their vote", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-clear",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-clear",
+                chosen: [],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({ selectedOptions: [] })
+        );
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ text: string }>,
+        ];
+        expect((await factory()).text).toBe("");
+      });
+
+      it("warns and drops the vote when the poll is unknown to the state store", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "never-sent",
+                chosen: ["X"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).not.toHaveBeenCalled();
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("never-sent")
+        );
+      });
+
+      it("drops votes when decryption throws", async () => {
+        const baileys = await import("baileys");
+        const decryptMock = vi.mocked(baileys.decryptPollVote);
+        decryptMock.mockImplementationOnce(() => {
+          throw new Error("bad ciphertext");
+        });
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-broken",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-broken",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).not.toHaveBeenCalled();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          expect.stringContaining("decrypt poll vote"),
+          expect.any(Error)
+        );
+      });
+
+      it("ignores hashes that don't match any stored option", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        const baileys = await import("baileys");
+        const decryptMock = vi.mocked(baileys.decryptPollVote);
+        decryptMock.mockImplementationOnce(() => ({
+          selectedOptions: [createHash("sha256").update("Z").digest()],
+        }) as never);
+
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-mismatch",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-mismatch",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ text: string }>,
+        ];
+        expect((await factory()).text).toBe("");
+      });
+    });
+
+    // ── tracked poll registry (listTrackedPolls / forgetPoll) ────────────────
+
+    describe("tracked poll registry", () => {
+      async function sendStubbedPoll(opts: {
+        jid: string;
+        pollId: string;
+        question: string;
+        options: string[];
+        secret?: Buffer;
+      }) {
+        const threadId = adapter.encodeThreadId({ jid: opts.jid });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: opts.pollId, remoteJid: opts.jid, fromMe: true },
+          message: {
+            messageContextInfo: { messageSecret: opts.secret ?? Buffer.alloc(32, 9) },
+          },
+        });
+        await adapter.sendPoll(threadId, opts.question, opts.options);
+        return threadId;
+      }
+
+      function makePollVoteMessage(opts: {
+        pollId: string;
+        chosen: string[];
+        remoteJid: string;
+        participant?: string;
+      }): WAMessage {
+        return {
+          key: {
+            remoteJid: opts.remoteJid,
+            id: `vote-${opts.pollId}`,
+            fromMe: false,
+            participant: opts.participant,
+          },
+          message: {
+            pollUpdateMessage: {
+              pollCreationMessageKey: {
+                remoteJid: opts.remoteJid,
+                id: opts.pollId,
+                fromMe: true,
+              },
+              vote: {
+                encPayload: Buffer.from(opts.chosen.join("|"), "utf8"),
+                encIv: Buffer.alloc(12, 0),
+              },
+              senderTimestampMs: 1700000003000,
+            },
+          },
+          pushName: "Voter",
+          messageTimestamp: 1700000003,
+        } as WAMessage;
+      }
+
+      it("listTrackedPolls returns polls with question, options, and threadId", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        const expectedThreadId = adapter.encodeThreadId({ jid });
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-track-1",
+          question: "Lunch?",
+          options: ["Pizza", "Burger"],
+        });
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-track-2",
+          question: "Drink?",
+          options: ["Water", "Soda"],
+        });
+
+        const tracked = await adapter.listTrackedPolls();
+        expect(tracked).toEqual([
+          {
+            pollMessageId: "poll-track-1",
+            threadId: expectedThreadId,
+            question: "Lunch?",
+            options: ["Pizza", "Burger"],
+          },
+          {
+            pollMessageId: "poll-track-2",
+            threadId: expectedThreadId,
+            question: "Drink?",
+            options: ["Water", "Soda"],
+          },
+        ]);
+      });
+
+      it("listTrackedPolls returns empty when nothing has been tracked", async () => {
+        expect(await adapter.listTrackedPolls()).toEqual([]);
+      });
+
+      it("listTrackedPolls filters out entries whose stored data is gone", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-keep", question: "Q?", options: ["A", "B"] });
+        await sendStubbedPoll({ jid, pollId: "poll-gone", question: "Q?", options: ["A", "B"] });
+
+        // Simulate the entry expiring out of the StateAdapter (TTL elapsed) —
+        // index still has the id, but get() returns null.
+        stateStore.delete("baileys:baileys:poll:poll-gone");
+
+        const tracked = await adapter.listTrackedPolls();
+        expect(tracked.map((p) => p.pollMessageId)).toEqual(["poll-keep"]);
+      });
+
+      it("listTrackedPolls dedupes index entries", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-dup", question: "Q?", options: ["A", "B"] });
+        // Send a second poll with the same id (e.g. retry). Index now has two
+        // entries for the same id; result should still list it once.
+        await sendStubbedPoll({ jid, pollId: "poll-dup", question: "Q?", options: ["A", "B"] });
+
+        const tracked = await adapter.listTrackedPolls();
+        expect(tracked.map((p) => p.pollMessageId)).toEqual(["poll-dup"]);
+      });
+
+      it("forgetPoll removes the stored entry so listTrackedPolls drops it", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-forget", question: "Q?", options: ["A", "B"] });
+        expect((await adapter.listTrackedPolls()).map((p) => p.pollMessageId)).toContain(
+          "poll-forget"
+        );
+
+        await adapter.forgetPoll("poll-forget");
+
+        expect(mockState.delete).toHaveBeenCalledWith("baileys:baileys:poll:poll-forget");
+        expect(await adapter.listTrackedPolls()).toEqual([]);
+      });
+
+      it("listTrackedPolls + onPollVote re-registration round-trips after restart", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-resume",
+          question: "Time?",
+          options: ["10am", "2pm"],
+        });
+
+        // Simulate restart: build a new adapter against the same persistent
+        // state. In-memory subscriptions are gone — re-register from state.
+        const restarted = makeAdapter();
+        await restarted.initialize(mockChat);
+        await restarted.connect();
+
+        const tracked = await restarted.listTrackedPolls();
+        const handler = vi.fn();
+        for (const poll of tracked) {
+          restarted.onPollVote(poll.pollMessageId, handler);
+        }
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-resume",
+                chosen: ["10am"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(handler.mock.calls[0][0]).toMatchObject({
+          pollMessageId: "poll-resume",
+          selectedOptions: ["10am"],
+        });
+      });
+
+      it("appends to the index with the configured pollTtlMs", async () => {
+        adapter = makeAdapter({ pollTtlMs: 5000 });
+        await adapter.initialize(mockChat);
+        await adapter.connect();
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-ttl-idx", question: "Q?", options: ["A", "B"] });
+
+        expect(mockState.appendToList).toHaveBeenCalledWith(
+          "baileys:baileys:poll-index",
+          "poll-ttl-idx",
+          expect.objectContaining({ ttlMs: 5000 })
+        );
       });
     });
 

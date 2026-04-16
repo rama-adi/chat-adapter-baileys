@@ -28,10 +28,13 @@ import {
 } from "@chat-adapter/shared";
 import makeWASocket, {
   DisconnectReason,
+  decryptPollVote,
   extractMessageContent as extractBaileysMessageContent,
   fetchLatestBaileysVersion,
+  getKeyAuthor,
   isJidGroup,
   isJidNewsletter,
+  jidNormalizedUser,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
   downloadMediaMessage,
@@ -40,8 +43,35 @@ import makeWASocket, {
   type WAMessageKey,
   type WASocket,
 } from "baileys";
+import { createHash } from "node:crypto";
 import { BaileysFormatConverter } from "./format-converter.js";
-import type { BaileysAdapterConfig, BaileysGroupParticipant, BaileysThreadId } from "./types.js";
+import type {
+  BaileysAdapterConfig,
+  BaileysGroupParticipant,
+  BaileysPollVote,
+  BaileysPollVoteHandler,
+  BaileysThreadId,
+  BaileysTrackedPoll,
+} from "./types.js";
+
+const DEFAULT_POLL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const POLL_INDEX_MAX_LENGTH = 1000;
+
+interface StoredPollEntry {
+  question: string;
+  options: string[];
+  creatorJid: string;
+  /** base64-encoded message secret */
+  messageSecret: string;
+  /** Encoded thread ID where the poll was sent. May be undefined for entries written by older versions. */
+  threadId?: string;
+}
+
+interface PollVoteSubscription {
+  /** When set, only votes whose pollMessageId is in this set fire the handler. */
+  filter?: Set<string>;
+  handler: BaileysPollVoteHandler;
+}
 
 export class BaileysAdapter
   implements Adapter<BaileysThreadId, WAMessage>
@@ -58,6 +88,7 @@ export class BaileysAdapter
   private _shouldReconnect = true;
   /** Guard so we only request a pairing code once per socket lifetime. */
   private _pairingCodeRequested = false;
+  private _pollVoteSubscriptions: PollVoteSubscription[] = [];
 
   constructor(config: BaileysAdapterConfig) {
     const adapterName = config.adapterName ?? "baileys";
@@ -217,6 +248,7 @@ export class BaileysAdapter
 
           const content = getMessageContent(msg);
           const reaction = content?.reactionMessage;
+          const pollUpdate = content?.pollUpdateMessage;
           const threadId = this.encodeThreadId({ jid });
 
           if (reaction && this._chat) {
@@ -230,6 +262,11 @@ export class BaileysAdapter
               threadId,
               user: buildReactionAuthor(msg, this._socket?.user?.id),
             });
+            continue;
+          }
+
+          if (pollUpdate && this._chat) {
+            await this._handlePollUpdate(msg, pollUpdate, threadId);
             continue;
           }
 
@@ -806,6 +843,9 @@ export class BaileysAdapter
     const sent = await socket.sendMessage(jid, {
       poll: { name: question, values: options, selectableCount },
     });
+
+    await this._rememberPoll(sent, threadId, question, options);
+
     return this._toRawMessage(sent, threadId);
   }
 
@@ -855,6 +895,281 @@ export class BaileysAdapter
       raw: sent,
       threadId,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Poll vote handling
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register a handler for decrypted poll votes.
+   *
+   * WhatsApp poll votes arrive as `pollUpdateMessage` events and are E2E
+   * encrypted. The adapter automatically decrypts votes for polls the bot
+   * sent via {@link BaileysAdapter.sendPoll} (the poll's `messageSecret` is
+   * persisted via the SDK's `StateAdapter`) and dispatches them here.
+   *
+   * Decrypted votes are also forwarded to `chat.processMessage` with the
+   * selected option names joined as the message text — so handlers like
+   * `chat.onSubscribedMessage` still see them. Use this method when you need
+   * the structured payload (poll question, voter, selected option names).
+   *
+   * Mirrors the Chat SDK's filtered-handler shape (`onReaction(emoji, fn)`,
+   * `onAction(actionIds, fn)`).
+   *
+   * @example
+   * ```ts
+   * // All votes on any poll the bot has sent.
+   * wa.onPollVote((vote) => {
+   *   console.log(`${vote.voter.userName}: ${vote.selectedOptions.join(", ")}`);
+   * });
+   *
+   * // Votes scoped to a single poll.
+   * const poll = await wa.sendPoll(thread.threadId, "Lunch?", ["A", "B"]);
+   * wa.onPollVote(poll.id, async (vote) => {
+   *   await thread.post(`${vote.voter.userName} picked ${vote.selectedOptions[0]}`);
+   * });
+   *
+   * // Votes scoped to several polls.
+   * wa.onPollVote([pollA.id, pollB.id], handler);
+   * ```
+   *
+   * Multiple handlers can be registered; all matching handlers run in
+   * registration order. An empty `selectedOptions` array means the voter
+   * cleared their vote.
+   */
+  onPollVote(handler: BaileysPollVoteHandler): void;
+  onPollVote(
+    pollMessageIds: string | string[],
+    handler: BaileysPollVoteHandler
+  ): void;
+  onPollVote(
+    arg1: string | string[] | BaileysPollVoteHandler,
+    arg2?: BaileysPollVoteHandler
+  ): void {
+    if (typeof arg1 === "function") {
+      this._pollVoteSubscriptions.push({ handler: arg1 });
+      return;
+    }
+    if (!arg2) {
+      throw new ValidationError(
+        "baileys",
+        "onPollVote: handler is required when filtering by poll message id."
+      );
+    }
+    const ids = Array.isArray(arg1) ? arg1 : [arg1];
+    this._pollVoteSubscriptions.push({
+      filter: new Set(ids),
+      handler: arg2,
+    });
+  }
+
+  /**
+   * List polls the adapter is currently tracking — i.e. polls previously sent
+   * via {@link BaileysAdapter.sendPoll} whose decryption metadata still lives
+   * in the SDK's `StateAdapter`.
+   *
+   * Use this on startup to re-register per-poll handlers after a process
+   * restart (in-memory `onPollVote(pollId, handler)` registrations don't
+   * survive restarts, but the stored metadata does).
+   *
+   * Stale index entries (entries whose poll TTL has expired or were cleared
+   * via {@link BaileysAdapter.forgetPoll}) are filtered out — the returned
+   * list only contains polls that can actually decrypt incoming votes.
+   *
+   * @example
+   * ```ts
+   * const tracked = await wa.listTrackedPolls();
+   * for (const poll of tracked) {
+   *   wa.onPollVote(poll.pollMessageId, (vote) => {
+   *     console.log(`vote on "${poll.question}":`, vote.selectedOptions);
+   *   });
+   * }
+   * ```
+   */
+  async listTrackedPolls(): Promise<BaileysTrackedPoll[]> {
+    if (!this._chat) return [];
+    const state = this._chat.getState();
+    const ids = await state.getList<string>(this._pollIndexKey());
+    if (ids.length === 0) return [];
+
+    const seen = new Set<string>();
+    const tracked: BaileysTrackedPoll[] = [];
+
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+
+      const entry = await state.get<StoredPollEntry>(this._pollKey(id));
+      if (!entry) continue;
+
+      tracked.push({
+        pollMessageId: id,
+        threadId: entry.threadId ?? "",
+        question: entry.question,
+        options: entry.options,
+      });
+    }
+
+    return tracked;
+  }
+
+  /**
+   * Forget a tracked poll — deletes its decryption metadata from the
+   * `StateAdapter`. Subsequent votes on this poll won't be decrypted.
+   *
+   * Useful once a poll has closed and you no longer want to receive votes
+   * on it (e.g. the deadline passed). The index entry is left in place but
+   * filtered out by {@link BaileysAdapter.listTrackedPolls}.
+   */
+  async forgetPoll(pollMessageId: string): Promise<void> {
+    if (!this._chat) return;
+    await this._chat.getState().delete(this._pollKey(pollMessageId));
+  }
+
+  private _pollKey(pollMessageId: string): string {
+    return `baileys:${this.name}:poll:${pollMessageId}`;
+  }
+
+  private _pollIndexKey(): string {
+    return `baileys:${this.name}:poll-index`;
+  }
+
+  private async _rememberPoll(
+    sent: WAMessage | undefined,
+    threadId: string,
+    question: string,
+    options: string[]
+  ): Promise<void> {
+    const id = sent?.key?.id;
+    if (!this._chat || !id) {
+      return;
+    }
+
+    const secret = (
+      sent?.message as { messageContextInfo?: { messageSecret?: Uint8Array } } | undefined
+    )?.messageContextInfo?.messageSecret;
+
+    if (!secret) {
+      this._logger.warn(
+        "sendPoll: no messageSecret on sent poll — incoming votes won't be decryptable."
+      );
+      return;
+    }
+
+    const creatorJid = jidNormalizedUser(this._socket?.user?.id ?? "");
+    const entry: StoredPollEntry = {
+      question,
+      options,
+      creatorJid,
+      messageSecret: Buffer.from(secret).toString("base64"),
+      threadId,
+    };
+
+    const ttl = this._config.pollTtlMs ?? DEFAULT_POLL_TTL_MS;
+    const ttlOpt = ttl > 0 ? ttl : undefined;
+    const state = this._chat.getState();
+    await state.set(this._pollKey(id), entry, ttlOpt);
+    await state.appendToList(this._pollIndexKey(), id, {
+      maxLength: POLL_INDEX_MAX_LENGTH,
+      ttlMs: ttlOpt,
+    });
+  }
+
+  private async _handlePollUpdate(
+    msg: WAMessage,
+    update: NonNullable<NonNullable<WAMessage["message"]>["pollUpdateMessage"]>,
+    threadId: string
+  ): Promise<void> {
+    const pollMessageId = update.pollCreationMessageKey?.id;
+    if (!pollMessageId || !this._chat) {
+      return;
+    }
+
+    const stored = await this._chat
+      .getState()
+      .get<StoredPollEntry>(this._pollKey(pollMessageId));
+
+    if (!stored) {
+      this._logger.warn(
+        `pollUpdateMessage: no stored poll for id=${pollMessageId} — ` +
+          "the bot may have restarted with a non-persistent state adapter, " +
+          "or the poll was sent by a different bot instance."
+      );
+      return;
+    }
+
+    const meId = jidNormalizedUser(this._socket?.user?.id ?? "");
+    const voterJid = getKeyAuthor(msg.key, meId);
+    const messageSecret = new Uint8Array(
+      Buffer.from(stored.messageSecret, "base64")
+    );
+
+    let voteMsg: { selectedOptions?: Uint8Array[] | null };
+    try {
+      voteMsg = decryptPollVote(update.vote ?? {}, {
+        pollEncKey: messageSecret,
+        pollMsgId: pollMessageId,
+        pollCreatorJid: stored.creatorJid,
+        voterJid,
+      });
+    } catch (err) {
+      this._logger.error("Failed to decrypt poll vote", err);
+      return;
+    }
+
+    const optionByHash = new Map<string, string>();
+    for (const option of stored.options) {
+      const hash = createHash("sha256").update(option).digest("hex");
+      optionByHash.set(hash, option);
+    }
+
+    const selectedOptions: string[] = [];
+    for (const hashBytes of voteMsg.selectedOptions ?? []) {
+      const name = optionByHash.get(Buffer.from(hashBytes).toString("hex"));
+      if (name) selectedOptions.push(name);
+    }
+
+    const author = buildReactionAuthor(msg, this._socket?.user?.id);
+
+    const vote: BaileysPollVote = {
+      threadId,
+      pollMessageId,
+      question: stored.question,
+      options: stored.options,
+      selectedOptions,
+      voter: author,
+      raw: msg,
+    };
+
+    for (const sub of this._pollVoteSubscriptions) {
+      if (sub.filter && !sub.filter.has(pollMessageId)) continue;
+      try {
+        await sub.handler(vote);
+      } catch (err) {
+        this._logger.error("onPollVote handler threw", err);
+      }
+    }
+
+    const text = selectedOptions.join(", ");
+    const formatted = this._converter.toAst(text);
+    const messageId = msg.key.id ?? generateMessageIDV2();
+
+    this._chat.processMessage(this, threadId, async () =>
+      new Message<WAMessage>({
+        id: messageId,
+        threadId,
+        text,
+        formatted,
+        raw: msg,
+        author,
+        metadata: {
+          dateSent: new Date(Number(msg.messageTimestamp ?? 0) * 1000),
+          edited: false,
+        },
+        attachments: [],
+      })
+    );
   }
 }
 

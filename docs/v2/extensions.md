@@ -278,7 +278,171 @@ sendPoll(
 - `selectableCount` — how many options a user can select. `1` = single-choice, `>1` = multi-choice, `0` = unlimited. Must be an integer ≥ 0.
 - Throws if the socket is not connected.
 
-> **Note:** Poll vote events are not yet forwarded through the Chat SDK handler system. You can observe raw Baileys events via `socketOptions` if you need to tally votes.
+### Receiving poll votes
+
+WhatsApp poll votes arrive as `pollUpdateMessage` events and are end-to-end encrypted with a `messageSecret` that only the poll's sender holds. The adapter handles this transparently:
+
+1. When you call `sendPoll(...)`, the adapter stores the poll's `messageSecret`, the option list, and the creator JID in the SDK's `StateAdapter` (`chat.getState()`), keyed by the poll's message ID.
+2. When a `pollUpdateMessage` arrives in `messages.upsert`, the adapter looks up the entry, decrypts the vote with `decryptPollVote` from Baileys, and maps the SHA‑256 option hashes back to your original option strings.
+3. Decrypted votes are dispatched through **two** channels — pick whichever fits your handler.
+
+#### Option A — `wa.onPollVote(handler)` (structured)
+
+Mirrors the Chat SDK's `chat.onReaction(...)` and `chat.onAction(...)` shape: register a handler post-construction, optionally filter by poll ID. You get the original question, the full option list, the option names the voter currently has selected, and the voter's `Author`.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+// 1. Listen to votes on every poll the bot sends.
+whatsapp.onPollVote(async (vote) => {
+  if (vote.selectedOptions.length === 0) {
+    console.log(`${vote.voter.userName} cleared their vote on "${vote.question}"`);
+    return;
+  }
+  console.log(
+    `${vote.voter.userName} voted ${vote.selectedOptions.join(", ")} on "${vote.question}"`
+  );
+});
+```
+
+Or scope the handler to a specific poll — natural to chain after `sendPoll`:
+
+```ts
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.text !== "!lunch") return;
+
+  const wa = requireBaileysAdapter(thread);
+  const poll = await wa.sendPoll(thread.threadId, "Where for lunch?", [
+    "Pizza",
+    "Tacos",
+    "Sushi",
+  ]);
+
+  // Only votes on this specific poll fire this handler.
+  wa.onPollVote(poll.id, async (vote) => {
+    await thread.post(
+      `${vote.voter.userName} picked ${vote.selectedOptions[0]}`
+    );
+  });
+});
+```
+
+You can also pass an array of IDs to filter on several polls at once:
+
+```ts
+wa.onPollVote([weeklyPoll.id, sprintPoll.id], handler);
+```
+
+The handler fires for every vote update — including changes (the user re-tapping a different option) and clears (empty `selectedOptions`). Multiple handlers can be registered; all matching handlers run in registration order, and a thrown handler is logged but doesn't block the others.
+
+**`BaileysPollVote` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `threadId` | `string` | Encoded thread ID where the poll lives |
+| `pollMessageId` | `string` | Message ID of the original poll the bot sent |
+| `question` | `string` | Original poll question |
+| `options` | `string[]` | Original options in send order |
+| `selectedOptions` | `string[]` | Options the voter currently has selected (empty = cleared) |
+| `voter` | `Author` | The voter (in groups, this is the participant — not the group JID) |
+| `raw` | `WAMessage` | The raw Baileys vote message |
+
+**Signature:**
+```ts
+onPollVote(handler: (vote: BaileysPollVote) => void | Promise<void>): void;
+onPollVote(
+  pollMessageIds: string | string[],
+  handler: (vote: BaileysPollVote) => void | Promise<void>
+): void;
+```
+
+#### Option B — Standard Chat SDK message handlers
+
+Votes are also routed through `chat.processMessage` with `text` set to `selectedOptions.join(", ")`, so existing handlers (`onSubscribedMessage`, `onNewMention`, etc.) see them as regular incoming messages. Check `message.raw.message?.pollUpdateMessage` to distinguish votes from real text:
+
+```ts
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.raw.message?.pollUpdateMessage) {
+    await thread.post(`Got your vote: ${message.text}`);
+    return;
+  }
+  // ...regular text handling
+});
+```
+
+This is the right channel for "treat votes like any other message" use cases (e.g. piping into an LLM). For structured access — knowing the question, the full option list, or whether the vote was cleared — use `wa.onPollVote(...)`.
+
+#### Persistence is required
+
+Decrypting an incoming vote needs the `messageSecret` of the original poll, so the adapter must still have that entry in its state when the vote arrives. With the default in-memory `StateAdapter`, **restarts erase poll keys** and any votes received afterwards will be dropped with a warning like:
+
+```
+pollUpdateMessage: no stored poll for id=… — the bot may have restarted with a non-persistent state adapter…
+```
+
+For production, back the SDK with a persistent state adapter (e.g. Redis). The same store the SDK already uses for thread subscriptions and distributed locking will pick up poll storage automatically:
+
+```ts
+import { Chat } from "chat";
+import { createRedisState } from "chat/state-redis"; // or your adapter of choice
+
+const bot = new Chat({
+  userName: "mybot",
+  adapters: { whatsapp },
+  state: createRedisState({ url: process.env.REDIS_URL! }),
+});
+```
+
+> **Note:** `wa.onPollVote(...)` registrations live in the adapter's process memory — they do **not** persist across restarts. If you register a per-poll handler and the process restarts, the persistence layer still has the poll's `messageSecret` (assuming Redis or similar), but no handler is registered to receive the vote. See **Resuming after a restart** below, or pair persistent state with a global `wa.onPollVote(handler)` that dispatches by `vote.pollMessageId` based on your own data model.
+
+#### Resuming after a restart
+
+The adapter exposes the list of polls it's currently tracking — re-register per-poll handlers on startup so votes resume routing without you having to keep a separate index.
+
+```ts
+const tracked = await whatsapp.listTrackedPolls();
+for (const poll of tracked) {
+  whatsapp.onPollVote(poll.pollMessageId, async (vote) => {
+    // your per-poll routing
+  });
+}
+```
+
+`listTrackedPolls()` returns `BaileysTrackedPoll[]`:
+
+| field           | description                                                       |
+| --------------- | ----------------------------------------------------------------- |
+| `pollMessageId` | Pass to `wa.onPollVote(pollId, handler)` to re-attach a handler.  |
+| `threadId`      | Encoded thread ID where the poll was sent.                        |
+| `question`      | Original poll question.                                           |
+| `options`       | Original options (in send order).                                 |
+
+Entries whose poll TTL has expired are filtered out automatically — the returned list only contains polls that can still decrypt incoming votes.
+
+When a poll closes and you no longer want to receive votes on it, drop its stored metadata:
+
+```ts
+await whatsapp.forgetPoll(pollMessageId);
+```
+
+#### Tuning the TTL
+
+Stored poll metadata defaults to a 30-day TTL. Override it via `pollTtlMs`:
+
+```ts
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  pollTtlMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+});
+```
+
+Pass `0` to keep entries until manually evicted. Storage keys are namespaced as `baileys:<adapterName>:poll:<pollMessageId>` so multi-account setups don't collide.
+
+#### Caveats
+
+- Votes on polls **sent by other clients** (e.g. a human user sent the poll, the bot is just listening) cannot be decrypted — the bot doesn't hold the `messageSecret`. The `pollUpdateMessage` is dropped with a warning.
+- Re-voting and clearing produce additional `pollUpdateMessage` events; the latest one always represents the voter's current choice. Track per-voter state yourself if you need an audit trail.
+- Multi-select polls produce one `pollUpdateMessage` containing all currently-selected options, not one per option.
 
 ---
 
