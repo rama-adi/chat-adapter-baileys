@@ -50,6 +50,7 @@ import type {
   BaileysGroupParticipant,
   BaileysPollVote,
   BaileysPollVoteHandler,
+  BaileysSendPollOptions,
   BaileysThreadId,
   BaileysTrackedPoll,
 } from "./types.js";
@@ -65,6 +66,8 @@ interface StoredPollEntry {
   messageSecret: string;
   /** Encoded thread ID where the poll was sent. May be undefined for entries written by older versions. */
   threadId?: string;
+  /** Arbitrary caller-supplied metadata, round-tripped into every vote. */
+  metadata?: unknown;
 }
 
 interface PollVoteSubscription {
@@ -828,13 +831,19 @@ export class BaileysAdapter
    *   "2:00 PM",
    *   "5:00 PM",
    * ]);
+   *
+   * // With arbitrary metadata round-tripped to onPollVote:
+   * await whatsapp.sendPoll(thread.threadId, "Lunch?", ["A", "B"], 1, {
+   *   metadata: { askedBy: userId },
+   * });
    * ```
    */
   async sendPoll(
     threadId: string,
     question: string,
     options: string[],
-    selectableCount = 1
+    selectableCount = 1,
+    sendOptions?: BaileysSendPollOptions
   ): Promise<RawMessage<WAMessage>> {
     assertValidPoll(question, options, selectableCount);
 
@@ -844,7 +853,13 @@ export class BaileysAdapter
       poll: { name: question, values: options, selectableCount },
     });
 
-    await this._rememberPoll(sent, threadId, question, options);
+    await this._rememberPoll(
+      sent,
+      threadId,
+      question,
+      options,
+      sendOptions?.metadata
+    );
 
     return this._toRawMessage(sent, threadId);
   }
@@ -1008,6 +1023,7 @@ export class BaileysAdapter
         threadId: entry.threadId ?? "",
         question: entry.question,
         options: entry.options,
+        metadata: entry.metadata,
       });
     }
 
@@ -1039,7 +1055,8 @@ export class BaileysAdapter
     sent: WAMessage | undefined,
     threadId: string,
     question: string,
-    options: string[]
+    options: string[],
+    metadata: unknown
   ): Promise<void> {
     const id = sent?.key?.id;
     if (!this._chat || !id) {
@@ -1064,6 +1081,7 @@ export class BaileysAdapter
       creatorJid,
       messageSecret: Buffer.from(secret).toString("base64"),
       threadId,
+      ...(metadata !== undefined ? { metadata } : {}),
     };
 
     const ttl = this._config.pollTtlMs ?? DEFAULT_POLL_TTL_MS;
@@ -1140,6 +1158,7 @@ export class BaileysAdapter
       selectedOptions,
       voter: author,
       raw: msg,
+      metadata: stored.metadata,
     };
 
     for (const sub of this._pollVoteSubscriptions) {

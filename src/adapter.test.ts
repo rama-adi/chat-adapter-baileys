@@ -1244,6 +1244,41 @@ describe("BaileysAdapter", () => {
           undefined
         );
       });
+
+      it("persists caller-supplied metadata alongside the poll entry", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-meta", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 3) } },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"], 1, {
+          metadata: { askedBy: "user-42", quizId: 7 },
+        });
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          "baileys:baileys:poll:poll-meta",
+          expect.objectContaining({
+            metadata: { askedBy: "user-42", quizId: 7 },
+          }),
+          expect.anything()
+        );
+      });
+
+      it("omits the metadata key entirely when none is provided", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-nometa", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 4) } },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+
+        const [, stored] = mockState.set.mock.calls.find(
+          ([key]) => key === "baileys:baileys:poll:poll-nometa"
+        ) as [string, Record<string, unknown>];
+        expect(Object.prototype.hasOwnProperty.call(stored, "metadata")).toBe(false);
+      });
     });
 
     // ── poll vote handling (pollUpdateMessage) ────────────────────────────────
@@ -1255,6 +1290,7 @@ describe("BaileysAdapter", () => {
         question: string;
         options: string[];
         secret?: Buffer;
+        metadata?: unknown;
       }) {
         const threadId = adapter.encodeThreadId({ jid: opts.jid });
         mockSocket.sendMessage.mockResolvedValueOnce({
@@ -1263,7 +1299,13 @@ describe("BaileysAdapter", () => {
             messageContextInfo: { messageSecret: opts.secret ?? Buffer.alloc(32, 9) },
           },
         });
-        await adapter.sendPoll(threadId, opts.question, opts.options);
+        await adapter.sendPoll(
+          threadId,
+          opts.question,
+          opts.options,
+          1,
+          opts.metadata !== undefined ? { metadata: opts.metadata } : undefined
+        );
         return threadId;
       }
 
@@ -1372,6 +1414,69 @@ describe("BaileysAdapter", () => {
             voter: expect.objectContaining({ userId: jid }),
           })
         );
+      });
+
+      it("round-trips sendPoll metadata to onPollVote handlers", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-meta-rt",
+          question: "Q?",
+          options: ["A", "B"],
+          metadata: { askedBy: "user-42" },
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-meta-rt",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pollMessageId: "poll-meta-rt",
+            metadata: { askedBy: "user-42" },
+          })
+        );
+      });
+
+      it("delivers metadata as undefined when the poll was sent without any", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-nometa-rt",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-nometa-rt",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        const vote = handler.mock.calls[0][0] as { metadata?: unknown };
+        expect(vote.metadata).toBeUndefined();
       });
 
       it("filters handlers registered with a specific pollMessageId", async () => {
@@ -1651,6 +1756,7 @@ describe("BaileysAdapter", () => {
         question: string;
         options: string[];
         secret?: Buffer;
+        metadata?: unknown;
       }) {
         const threadId = adapter.encodeThreadId({ jid: opts.jid });
         mockSocket.sendMessage.mockResolvedValueOnce({
@@ -1659,7 +1765,13 @@ describe("BaileysAdapter", () => {
             messageContextInfo: { messageSecret: opts.secret ?? Buffer.alloc(32, 9) },
           },
         });
-        await adapter.sendPoll(threadId, opts.question, opts.options);
+        await adapter.sendPoll(
+          threadId,
+          opts.question,
+          opts.options,
+          1,
+          opts.metadata !== undefined ? { metadata: opts.metadata } : undefined
+        );
         return threadId;
       }
 
@@ -1726,6 +1838,24 @@ describe("BaileysAdapter", () => {
             options: ["Water", "Soda"],
           },
         ]);
+      });
+
+      it("listTrackedPolls surfaces persisted metadata on each tracked entry", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-track-meta",
+          question: "Lunch?",
+          options: ["Pizza", "Burger"],
+          metadata: { askedBy: "user-42" },
+        });
+
+        const tracked = await adapter.listTrackedPolls();
+        expect(tracked).toHaveLength(1);
+        expect(tracked[0]).toMatchObject({
+          pollMessageId: "poll-track-meta",
+          metadata: { askedBy: "user-42" },
+        });
       });
 
       it("listTrackedPolls returns empty when nothing has been tracked", async () => {

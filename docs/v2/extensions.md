@@ -269,14 +269,46 @@ sendPoll(
   threadId: string,
   question: string,
   options: string[],
-  selectableCount?: number   // default: 1
+  selectableCount?: number,         // default: 1
+  sendOptions?: { metadata?: unknown }
 ): Promise<RawMessage<WAMessage>>
 ```
 
 - `question` — the poll question text (must be non-empty).
 - `options` — 2–12 option strings (each must be non-empty; whitespace-only is rejected).
 - `selectableCount` — how many options a user can select. `1` = single-choice, `>1` = multi-choice, `0` = unlimited. Must be an integer ≥ 0.
+- `sendOptions.metadata` — arbitrary, opaque app-level context (e.g. `{ askedBy: userId }`, a quiz id, a correlation id). Persisted alongside the poll's decryption state and round-tripped unchanged to every vote as `vote.metadata`. See [Per-poll metadata](#per-poll-metadata) below.
 - Throws if the socket is not connected.
+
+### Per-poll metadata
+
+Polls are often sent on behalf of a specific user or in a specific app context that you want back when votes arrive — e.g. "only the user who triggered the bot may answer this poll", "this poll belongs to quiz #42", or a correlation id for a survey row.
+
+Instead of maintaining your own `pollMessageId → context` map, pass a `metadata` value to `sendPoll` and read it off `vote.metadata` in `onPollVote`. It's stored in the same `StateAdapter` entry as the poll's `messageSecret`, so it survives restarts exactly like the poll's decryption state does.
+
+```ts
+const poll = await wa.sendPoll(
+  thread.threadId,
+  "Lunch?",
+  ["Pizza", "Tacos"],
+  1,
+  { metadata: { askedBy: triggeringUserId } }
+);
+
+wa.onPollVote(poll.id, async (vote) => {
+  const meta = vote.metadata as { askedBy: string } | undefined;
+  if (meta?.askedBy && vote.voter.userId !== meta.askedBy) {
+    return; // ignore votes from anyone but the user who triggered the poll
+  }
+  await thread.post(`${vote.voter.userName} picked ${vote.selectedOptions[0]}`);
+});
+```
+
+Notes:
+
+- Typed as `unknown` on the vote — cast it to your app's shape at the read site. Anything JSON-serialisable is safe; persistence is whatever `state.set` can store.
+- Included verbatim on `listTrackedPolls()` entries, so resume-after-restart flows can route votes off `metadata` without a separate lookup.
+- Entries written by older adapter versions have no `metadata`; treat `undefined` as "no context attached".
 
 ### Receiving poll votes
 
@@ -346,6 +378,7 @@ The handler fires for every vote update — including changes (the user re-tappi
 | `selectedOptions` | `string[]` | Options the voter currently has selected (empty = cleared) |
 | `voter` | `Author` | The voter (in groups, this is the participant — not the group JID) |
 | `raw` | `WAMessage` | The raw Baileys vote message |
+| `metadata` | `unknown` | Whatever was passed as `sendOptions.metadata` to `sendPoll` (`undefined` if none) |
 
 **Signature:**
 ```ts
@@ -416,6 +449,7 @@ for (const poll of tracked) {
 | `threadId`      | Encoded thread ID where the poll was sent.                        |
 | `question`      | Original poll question.                                           |
 | `options`       | Original options (in send order).                                 |
+| `metadata`      | Whatever was passed as `sendOptions.metadata` to `sendPoll`.      |
 
 Entries whose poll TTL has expired are filtered out automatically — the returned list only contains polls that can still decrypt incoming votes.
 

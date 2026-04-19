@@ -42,6 +42,12 @@ export interface BaileysPollVote {
   voter: Author;
   /** Raw Baileys vote message */
   raw: WAMessage;
+  /**
+   * Arbitrary metadata supplied to {@link BaileysAdapter.sendPoll}. Persisted
+   * alongside the poll's decryption state and round-tripped unchanged to every
+   * vote on that poll. `undefined` when no metadata was provided.
+   */
+  metadata?: unknown;
 }
 
 /** Configuration for the Baileys adapter */
@@ -155,4 +161,17 @@ export interface BaileysTrackedPoll {
   question: string;
   /** Original poll options (in send order). */
   options: string[];
+  /** Arbitrary metadata supplied to {@link BaileysAdapter.sendPoll}. */
+  metadata?: unknown;
+}
+
+/** Options for {@link BaileysAdapter.sendPoll}. */
+export interface BaileysSendPollOptions {
+  /**
+   * Arbitrary, opaque metadata to associate with this poll. Persisted in the
+   * SDK's `StateAdapter` alongside the poll's decryption state and round-tripped
+   * unchanged to every {@link BaileysPollVote} on this poll. Useful for
+   * app-specific context (e.g. "askedBy" user id, quiz id, correlation id).
+   */
+  metadata?: unknown;
 }

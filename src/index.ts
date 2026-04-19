@@ -7,6 +7,7 @@ export type {
   BaileysGroupParticipant,
   BaileysPollVote,
   BaileysPollVoteHandler,
+  BaileysSendPollOptions,
   BaileysThreadId,
   BaileysTrackedPoll,
 } from "./types.js";
