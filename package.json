@@ -1,6 +1,6 @@
 {
     "name": "chat-adapter-baileys",
-    "version": "2.1.0-beta.0",
+    "version": "2.1.0-beta.1",
     "description": "WhatsApp (Baileys) adapter for Chat SDK",
     "type": "module",
     "main": "./dist/index.js",
