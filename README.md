@@ -154,11 +154,11 @@ bot.onSubscribedMessage(async (thread, message) => {
   const adapter = thread.adapter;
 
   if (isBaileysAdapter(adapter)) {
-    await adapter.markRead(
-      thread.threadId,
-      [message.id],
-      thread.isDM ? undefined : message.author.userId
-    );
+    await adapter.markRead({
+      threadId: thread.threadId,
+      messageIds: [message.id],
+      participant: thread.isDM ? undefined : message.author.userId,
+    });
     return;
   }
 
@@ -182,11 +182,13 @@ The WhatsApp-specific methods stay on the concrete adapter:
 | Method | Description |
 |---|---|
 | `whatsapp.reply(message, text)` | Send a quoted reply (native WhatsApp reply bubble) |
-| `whatsapp.markRead(threadId, messageIds)` | Send read receipts (blue double-ticks) |
+| `whatsapp.markRead({ threadId, messageIds, participant? })` | Send read receipts (blue double-ticks) |
 | `whatsapp.setPresence("available" \| "unavailable")` | Set bot's global online/offline status |
-| `whatsapp.sendLocation(threadId, lat, lon, options?)` | Send a native location pin |
-| `whatsapp.sendPoll(threadId, question, options, selectableCount?)` | Send a WhatsApp poll |
+| `whatsapp.sendLocation({ threadId, latitude, longitude, name?, address? })` | Send a native location pin |
+| `whatsapp.sendPoll({ threadId, question, options, selectableCount?, metadata? })` | Send a WhatsApp poll |
 | `whatsapp.fetchGroupParticipants(threadId)` | List group members with admin roles |
+
+Positional calls for `markRead`, `sendLocation`, and `sendPoll` are deprecated and will be removed in the next major version. The labeled object form is the supported direction for new code.
 
 See [Extensions](./docs/extensions.md) for full documentation and examples.
 
@@ -222,10 +224,10 @@ See [Extensions](./docs/extensions.md) for full documentation and examples.
 | Feature | Support |
 |---|---|
 | Quoted reply bubble | ✅ `reply(message, text)` |
-| Read receipts | ✅ `markRead(...)` |
+| Read receipts | ✅ `markRead({ threadId, messageIds, participant? })` |
 | Global presence | ✅ `setPresence(...)` |
-| Location messages | ✅ `sendLocation(...)` |
-| Polls | ✅ `sendPoll(...)` |
+| Location messages | ✅ `sendLocation({ threadId, latitude, longitude, name?, address? })` |
+| Polls | ✅ `sendPoll({ threadId, question, options, selectableCount?, metadata? })` |
 | Group participant lookup | ✅ `fetchGroupParticipants(...)` |
 
 ## Behavior Notes

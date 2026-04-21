@@ -1066,6 +1066,23 @@ describe("BaileysAdapter", () => {
         ]);
       });
 
+      it("accepts named arguments", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
+        await adapter.markRead({
+          threadId,
+          messageIds: ["msg-1"],
+          participant: "107082225311887@lid",
+        });
+        expect(mockSocket.readMessages).toHaveBeenCalledWith([
+          {
+            remoteJid: "123456789@g.us",
+            id: "msg-1",
+            fromMe: false,
+            participant: "107082225311887@lid",
+          },
+        ]);
+      });
+
       it("handles an empty messageIds array without error", async () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
         await adapter.markRead(threadId, []);
@@ -1120,6 +1137,28 @@ describe("BaileysAdapter", () => {
         expect(payload.location.address).toBe("San Francisco, CA");
       });
 
+      it("accepts named arguments", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.sendLocation({
+          threadId,
+          latitude: 37.7749,
+          longitude: -122.4194,
+          name: "SF HQ",
+          address: "San Francisco, CA",
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          {
+            location: {
+              degreesLatitude: 37.7749,
+              degreesLongitude: -122.4194,
+              name: "SF HQ",
+              address: "San Francisco, CA",
+            },
+          }
+        );
+      });
+
       it("rejects invalid latitude values", async () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
         await expect(adapter.sendLocation(threadId, 91, 0)).rejects.toThrow(/latitude/);
@@ -1140,6 +1179,32 @@ describe("BaileysAdapter", () => {
         expect(mockSocket.sendMessage).toHaveBeenCalledWith(
           "15551234567@s.whatsapp.net",
           { poll: { name: "Best time?", values: ["10am", "2pm", "5pm"], selectableCount: 1 } }
+        );
+      });
+
+      it("accepts named arguments", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-named-args", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 5) } },
+        });
+        await adapter.sendPoll({
+          threadId,
+          question: "Best time?",
+          options: ["10am", "2pm", "5pm"],
+          selectableCount: 2,
+          metadata: { askedBy: "user-42" },
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { poll: { name: "Best time?", values: ["10am", "2pm", "5pm"], selectableCount: 2 } }
+        );
+        expect(mockState.set).toHaveBeenCalledWith(
+          "baileys:baileys:poll:poll-named-args",
+          expect.objectContaining({
+            metadata: { askedBy: "user-42" },
+          }),
+          expect.anything()
         );
       });
 

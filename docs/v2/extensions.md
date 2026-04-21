@@ -17,6 +17,8 @@ In `v2`, the clean way to access these methods from Chat SDK handlers is through
 - `isBaileysAdapter(adapter)` — branch on platform with full type narrowing
 - `requireBaileysAdapter(thread)` — assert that the current context is WhatsApp and get the concrete adapter
 
+For multi-argument extension methods, `v2.1.0-beta.2` adds named-argument overloads. The old positional calls still work for now, but they are deprecated and will be removed in the next major version. The object form is now the recommended style because it scales better as method signatures grow.
+
 ---
 
 ## Why extensions exist
@@ -38,11 +40,11 @@ bot.onSubscribedMessage(async (thread, message) => {
   const adapter = thread.adapter;
 
   if (isBaileysAdapter(adapter)) {
-    await adapter.markRead(
-      thread.threadId,
-      [message.id],
-      thread.isDM ? undefined : message.author.userId
-    );
+    await adapter.markRead({
+      threadId: thread.threadId,
+      messageIds: [message.id],
+      participant: thread.isDM ? undefined : message.author.userId,
+    });
     return;
   }
 
@@ -121,7 +123,7 @@ reply(
 
 ---
 
-## `markRead(threadId, messageIds)` — Read receipts
+## `markRead({ threadId, messageIds, participant? })` — Read receipts
 
 Send read receipts for specific messages in a thread. WhatsApp shows blue double-ticks to the sender when this is called.
 
@@ -136,11 +138,11 @@ bot.onSubscribedMessage(async (thread, message) => {
   const wa = requireBaileysAdapter(thread);
 
   // Mark this message as read immediately on receipt
-  await wa.markRead(
-    thread.threadId,
-    [message.id],
-    thread.isDM ? undefined : message.author.userId
-  );
+  await wa.markRead({
+    threadId: thread.threadId,
+    messageIds: [message.id],
+    participant: thread.isDM ? undefined : message.author.userId,
+  });
 
   await thread.post("Processing your request...");
 });
@@ -150,11 +152,20 @@ You can batch multiple message IDs in one call:
 
 ```ts
 const ids = messages.map(m => m.id);
-await requireBaileysAdapter(thread).markRead(thread.threadId, ids);
+await requireBaileysAdapter(thread).markRead({
+  threadId: thread.threadId,
+  messageIds: ids,
+});
 ```
 
 **Signature:**
 ```ts
+markRead(args: {
+  threadId: string;
+  messageIds: string[];
+  participant?: string;
+}): Promise<void>
+
 markRead(
   threadId: string,
   messageIds: string[],
@@ -162,6 +173,8 @@ markRead(
 ): Promise<void>
 ```
 
+- The object form is recommended.
+- The positional form is deprecated and will be removed in the next major version.
 - `participant` — optional sender JID/LID for group messages. Not needed for DMs.
 - Throws if the socket is not connected.
 
@@ -193,7 +206,7 @@ setPresence(presence: "available" | "unavailable"): Promise<void>
 
 ---
 
-## `sendLocation(threadId, latitude, longitude, options?)` — Location pin
+## `sendLocation({ threadId, latitude, longitude, ... })` — Location pin
 
 Send a native WhatsApp location message (shown as an interactive map pin). The Chat SDK has no location type, so this is only available as an extension.
 
@@ -202,15 +215,13 @@ import { requireBaileysAdapter } from "chat-adapter-baileys";
 
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.text.toLowerCase().includes("office")) {
-    await requireBaileysAdapter(thread).sendLocation(
-      thread.threadId,
-      37.7749,    // latitude
-      -122.4194,  // longitude
-      {
-        name: "HQ Office",
-        address: "1 Market St, San Francisco, CA",
-      }
-    );
+    await requireBaileysAdapter(thread).sendLocation({
+      threadId: thread.threadId,
+      latitude: 37.7749,
+      longitude: -122.4194,
+      name: "HQ Office",
+      address: "1 Market St, San Francisco, CA",
+    });
   }
 });
 ```
@@ -218,15 +229,23 @@ bot.onSubscribedMessage(async (thread, message) => {
 Without a name/address, a bare coordinate pin is sent:
 
 ```ts
-await requireBaileysAdapter(thread).sendLocation(
-  thread.threadId,
-  51.5074,
-  -0.1278
-);
+await requireBaileysAdapter(thread).sendLocation({
+  threadId: thread.threadId,
+  latitude: 51.5074,
+  longitude: -0.1278,
+});
 ```
 
 **Signature:**
 ```ts
+sendLocation(args: {
+  threadId: string;
+  latitude: number;
+  longitude: number;
+  name?: string;
+  address?: string;
+}): Promise<RawMessage<WAMessage>>
+
 sendLocation(
   threadId: string,
   latitude: number,
@@ -235,36 +254,45 @@ sendLocation(
 ): Promise<RawMessage<WAMessage>>
 ```
 
+- The object form is recommended.
+- The positional form is deprecated and will be removed in the next major version.
 - `latitude` / `longitude` — decimal degrees (WGS 84).
-- `options.name` — optional place name shown on the pin.
-- `options.address` — optional address line shown below the name.
+- `name` / `address` — optional label fields for the object form. In the positional form, pass these as `options.name` / `options.address`.
 - Throws if the socket is not connected.
 
 ---
 
-## `sendPoll(threadId, question, options, selectableCount?)` — Poll
+## `sendPoll({ threadId, question, options, selectableCount?, metadata? })` — Poll
 
 Send a native WhatsApp poll. Polls let users tap options directly in the chat. The Chat SDK has no poll concept.
 
 ```ts
 // Single-choice poll (default)
-await requireBaileysAdapter(thread).sendPoll(
-  thread.threadId,
-  "When should we hold the team sync?",
-  ["Monday 10am", "Wednesday 2pm", "Friday 4pm"]
-);
+await requireBaileysAdapter(thread).sendPoll({
+  threadId: thread.threadId,
+  question: "When should we hold the team sync?",
+  options: ["Monday 10am", "Wednesday 2pm", "Friday 4pm"],
+});
 
 // Multi-choice poll — users can pick up to 2 options
-await requireBaileysAdapter(thread).sendPoll(
-  thread.threadId,
-  "Which topics should we cover?",
-  ["Design review", "Sprint planning", "Bugs", "Roadmap"],
-  2   // selectableCount
-);
+await requireBaileysAdapter(thread).sendPoll({
+  threadId: thread.threadId,
+  question: "Which topics should we cover?",
+  options: ["Design review", "Sprint planning", "Bugs", "Roadmap"],
+  selectableCount: 2,
+});
 ```
 
 **Signature:**
 ```ts
+sendPoll(args: {
+  threadId: string;
+  question: string;
+  options: string[];
+  selectableCount?: number;
+  metadata?: unknown;
+}): Promise<RawMessage<WAMessage>>
+
 sendPoll(
   threadId: string,
   question: string,
@@ -274,10 +302,12 @@ sendPoll(
 ): Promise<RawMessage<WAMessage>>
 ```
 
+- The object form is recommended.
+- The positional form is deprecated and will be removed in the next major version.
 - `question` — the poll question text (must be non-empty).
 - `options` — 2–12 option strings (each must be non-empty; whitespace-only is rejected).
 - `selectableCount` — how many options a user can select. `1` = single-choice, `>1` = multi-choice, `0` = unlimited. Must be an integer ≥ 0.
-- `sendOptions.metadata` — arbitrary, opaque app-level context (e.g. `{ askedBy: userId }`, a quiz id, a correlation id). Persisted alongside the poll's decryption state and round-tripped unchanged to every vote as `vote.metadata`. See [Per-poll metadata](#per-poll-metadata) below.
+- `metadata` — arbitrary, opaque app-level context on the object form. In the positional form, pass this as `sendOptions.metadata`. Persisted alongside the poll's decryption state and round-tripped unchanged to every vote as `vote.metadata`. See [Per-poll metadata](#per-poll-metadata) below.
 - Throws if the socket is not connected.
 
 ### Per-poll metadata
@@ -287,13 +317,12 @@ Polls are often sent on behalf of a specific user or in a specific app context t
 Instead of maintaining your own `pollMessageId → context` map, pass a `metadata` value to `sendPoll` and read it off `vote.metadata` in `onPollVote`. It's stored in the same `StateAdapter` entry as the poll's `messageSecret`, so it survives restarts exactly like the poll's decryption state does.
 
 ```ts
-const poll = await wa.sendPoll(
-  thread.threadId,
-  "Lunch?",
-  ["Pizza", "Tacos"],
-  1,
-  { metadata: { askedBy: triggeringUserId } }
-);
+const poll = await wa.sendPoll({
+  threadId: thread.threadId,
+  question: "Lunch?",
+  options: ["Pizza", "Tacos"],
+  metadata: { askedBy: triggeringUserId },
+});
 
 wa.onPollVote(poll.id, async (vote) => {
   const meta = vote.metadata as { askedBy: string } | undefined;
@@ -344,11 +373,11 @@ bot.onSubscribedMessage(async (thread, message) => {
   if (message.text !== "!lunch") return;
 
   const wa = requireBaileysAdapter(thread);
-  const poll = await wa.sendPoll(thread.threadId, "Where for lunch?", [
-    "Pizza",
-    "Tacos",
-    "Sushi",
-  ]);
+  const poll = await wa.sendPoll({
+    threadId: thread.threadId,
+    question: "Where for lunch?",
+    options: ["Pizza", "Tacos", "Sushi"],
+  });
 
   // Only votes on this specific poll fire this handler.
   wa.onPollVote(poll.id, async (vote) => {

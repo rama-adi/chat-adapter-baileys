@@ -102,7 +102,10 @@ import { requireBaileysAdapter } from "chat-adapter-baileys";
 bot.onSubscribedMessage(async (thread, message) => {
   const wa = requireBaileysAdapter(thread);
   await wa.reply(message, "Got it!");
-  await wa.markRead(thread.threadId, [message.id]);
+  await wa.markRead({
+    threadId: thread.threadId,
+    messageIds: [message.id],
+  });
 });
 ```
 

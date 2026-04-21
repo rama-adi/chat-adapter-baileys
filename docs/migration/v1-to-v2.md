@@ -101,11 +101,11 @@ import { requireBaileysAdapter } from "chat-adapter-baileys";
 bot.onSubscribedMessage(async (thread, message) => {
   const wa = requireBaileysAdapter(thread);
   await wa.reply(message, "Got it!");
-  await wa.markRead(
-    thread.threadId,
-    [message.id],
-    thread.isDM ? undefined : message.author.userId
-  );
+  await wa.markRead({
+    threadId: thread.threadId,
+    messageIds: [message.id],
+    participant: thread.isDM ? undefined : message.author.userId,
+  });
 });
 ```
 
@@ -118,11 +118,11 @@ bot.onSubscribedMessage(async (thread, message) => {
   const adapter = thread.adapter;
 
   if (isBaileysAdapter(adapter)) {
-    await adapter.markRead(
-      thread.threadId,
-      [message.id],
-      thread.isDM ? undefined : message.author.userId
-    );
+    await adapter.markRead({
+      threadId: thread.threadId,
+      messageIds: [message.id],
+      participant: thread.isDM ? undefined : message.author.userId,
+    });
     return;
   }
 
@@ -180,15 +180,15 @@ Version 2 is less permissive in a few places. Check your code for these patterns
 - Now validates that `message.threadId` matches the quoted message JID
 - Now marks the inbound message as read before sending the quoted reply
 
-**`markRead(threadId, messageIds, participant?)`:**
+**`markRead({ threadId, messageIds, participant? })`:**
 
 - Now returns immediately when `messageIds` is empty
 
-**`sendLocation(threadId, latitude, longitude, options?)`:**
+**`sendLocation({ threadId, latitude, longitude, name?, address? })`:**
 
 - Now rejects invalid coordinates
 
-**`sendPoll(threadId, question, options, selectableCount?)`:**
+**`sendPoll({ threadId, question, options, selectableCount?, metadata? })`:**
 
 - Now rejects:
   - Empty question text
@@ -196,6 +196,8 @@ Version 2 is less permissive in a few places. Check your code for these patterns
   - More than 12 options
   - Empty option strings
   - Negative or non-integer `selectableCount`
+
+As of `2.1.0-beta.2`, `markRead`, `sendLocation`, and `sendPoll` also accept a single named-arguments object. The original positional forms still work, but they are now deprecated and will be removed in the next major version.
 
 If your v1 code relied on loose input handling, fix the caller rather than trying to preserve the old behavior.
 
@@ -205,10 +207,10 @@ If your v1 code relied on loose input handling, fix the caller rather than tryin
 
 - `BaileysAdapter` still exposes the same WhatsApp-specific methods:
   - `reply(...)`
-  - `markRead(...)`
+  - `markRead({ ... })`
   - `setPresence(...)`
-  - `sendLocation(...)`
-  - `sendPoll(...)`
+  - `sendLocation({ ... })`
+  - `sendPoll({ ... })`
   - `fetchGroupParticipants(...)`
 - `baileys` remains on `7.0.0-rc.9`
 - Cards still degrade to plain-text fallback

@@ -17,6 +17,30 @@ export interface BaileysGroupParticipant {
   isSuperAdmin: boolean;
 }
 
+/** Named arguments for {@link BaileysAdapter.markRead}. */
+export interface BaileysMarkReadArgs {
+  /** Encoded thread ID whose messages should be marked as read. */
+  threadId: string;
+  /** Message IDs to acknowledge. */
+  messageIds: string[];
+  /** Optional sender JID/LID for group messages. */
+  participant?: string;
+}
+
+/** Named arguments for {@link BaileysAdapter.sendLocation}. */
+export interface BaileysSendLocationArgs {
+  /** Encoded thread ID that should receive the location pin. */
+  threadId: string;
+  /** Latitude in decimal degrees (WGS 84). */
+  latitude: number;
+  /** Longitude in decimal degrees (WGS 84). */
+  longitude: number;
+  /** Optional place name shown on the pin. */
+  name?: string;
+  /** Optional address shown below the place name. */
+  address?: string;
+}
+
 /**
  * Decrypted poll vote delivered to {@link BaileysAdapterConfig.onPollVote}.
  *
@@ -173,5 +197,22 @@ export interface BaileysSendPollOptions {
    * unchanged to every {@link BaileysPollVote} on this poll. Useful for
    * app-specific context (e.g. "askedBy" user id, quiz id, correlation id).
    */
+  metadata?: unknown;
+}
+
+/** Named arguments for {@link BaileysAdapter.sendPoll}. */
+export interface BaileysSendPollArgs {
+  /** Encoded thread ID that should receive the poll. */
+  threadId: string;
+  /** Poll question text. */
+  question: string;
+  /** Poll options in send order. */
+  options: string[];
+  /**
+   * How many options a user can select.
+   * Defaults to `1`. Use `0` for unlimited.
+   */
+  selectableCount?: number;
+  /** Opaque app-level metadata persisted alongside poll state. */
   metadata?: unknown;
 }

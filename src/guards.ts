@@ -27,7 +27,10 @@ export function isBaileysAdapter(
  * @example
  * ```typescript
  * const wa = requireBaileysAdapter(thread);
- * await wa.markRead(thread.threadId, [message.id]);
+ * await wa.markRead({
+ *   threadId: thread.threadId,
+ *   messageIds: [message.id],
+ * });
  * ```
  */
 export function requireBaileysAdapter(

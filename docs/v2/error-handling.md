@@ -159,10 +159,18 @@ wa.reply(corruptedMessage, "text");
 **When it happens:** Passing out-of-range latitude or longitude to `sendLocation()`.
 
 ```ts
-await wa.sendLocation(threadId, 999, -122.4194);
+await wa.sendLocation({
+  threadId,
+  latitude: 999,
+  longitude: -122.4194,
+});
 // ValidationError: sendLocation: latitude must be between -90 and 90. Received 999.
 
-await wa.sendLocation(threadId, 37.7749, 999);
+await wa.sendLocation({
+  threadId,
+  latitude: 37.7749,
+  longitude: 999,
+});
 // ValidationError: sendLocation: longitude must be between -180 and 180. Received 999.
 ```
 
@@ -189,10 +197,18 @@ function isValidLat(lat: number): boolean {
 | Bad selectableCount | `sendPoll: selectableCount must be an integer >= 0. Received -1.` |
 
 ```ts
-await wa.sendPoll(threadId, "", ["A", "B"]);
+await wa.sendPoll({
+  threadId,
+  question: "",
+  options: ["A", "B"],
+});
 // ValidationError: sendPoll: question must not be empty.
 
-await wa.sendPoll(threadId, "Question?", ["Only one option"]);
+await wa.sendPoll({
+  threadId,
+  question: "Question?",
+  options: ["Only one option"],
+});
 // ValidationError: WhatsApp polls require between 2 and 12 options. Received 1.
 ```
 
@@ -210,7 +226,11 @@ async function createSafePoll(threadId: string, question: string, options: strin
     throw new Error("Need 2-12 valid options");
   }
   
-  return wa.sendPoll(threadId, trimmedQuestion, validOptions);
+  return wa.sendPoll({
+    threadId,
+    question: trimmedQuestion,
+    options: validOptions,
+  });
 }
 ```
 
@@ -326,7 +346,11 @@ See [Events and Lifecycle](./events-and-lifecycle.md) for detailed reconnection 
 bot.onSubscribedMessage(async (thread, message) => {
   try {
     const wa = requireBaileysAdapter(thread);
-    await wa.sendLocation(threadId, lat, lng);
+    await wa.sendLocation({
+      threadId,
+      latitude: lat,
+      longitude: lng,
+    });
   } catch (err) {
     if (err instanceof ValidationError) {
       // User input problem — tell them

@@ -48,8 +48,11 @@ import { BaileysFormatConverter } from "./format-converter.js";
 import type {
   BaileysAdapterConfig,
   BaileysGroupParticipant,
+  BaileysMarkReadArgs,
   BaileysPollVote,
   BaileysPollVoteHandler,
+  BaileysSendLocationArgs,
+  BaileysSendPollArgs,
   BaileysSendPollOptions,
   BaileysThreadId,
   BaileysTrackedPoll,
@@ -737,30 +740,47 @@ export class BaileysAdapter
    * @example
    * ```typescript
    * bot.onSubscribedMessage(async (thread, message) => {
-   *   await whatsapp.markRead(
-   *     thread.threadId,
-   *     [message.id],
-   *     thread.isDM ? undefined : message.author.userId
-   *   );
+   *   await whatsapp.markRead({
+   *     threadId: thread.threadId,
+   *     messageIds: [message.id],
+   *     participant: thread.isDM ? undefined : message.author.userId,
+   *   });
    * });
    * ```
+  */
+  async markRead(args: BaileysMarkReadArgs): Promise<void>;
+  /**
+   * @deprecated Use `markRead({ threadId, messageIds, participant })` instead.
+   * Positional arguments will be removed in the next major version.
    */
   async markRead(
     threadId: string,
     messageIds: string[],
     participant?: string
+  ): Promise<void>;
+  async markRead(
+    threadIdOrArgs: string | BaileysMarkReadArgs,
+    messageIds?: string[],
+    participant?: string
   ): Promise<void> {
-    if (messageIds.length === 0) {
+    const resolved = normalizeMarkReadArgs(
+      threadIdOrArgs,
+      messageIds,
+      participant
+    );
+    const { threadId } = resolved;
+
+    if (resolved.messageIds.length === 0) {
       return;
     }
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
-    const keys = messageIds.map((id) => ({
+    const keys = resolved.messageIds.map((id) => ({
       remoteJid: jid,
       id,
       fromMe: false,
-      participant,
+      participant: resolved.participant,
     }));
     await socket.readMessages(keys);
   }
@@ -790,29 +810,53 @@ export class BaileysAdapter
    *
    * @example
    * ```typescript
-   * await whatsapp.sendLocation(thread.threadId, 37.7749, -122.4194, {
+   * await whatsapp.sendLocation({
+   *   threadId: thread.threadId,
+   *   latitude: 37.7749,
+   *   longitude: -122.4194,
    *   name: "San Francisco",
    *   address: "San Francisco, CA, USA",
    * });
    * ```
    */
   async sendLocation(
+    args: BaileysSendLocationArgs
+  ): Promise<RawMessage<WAMessage>>;
+  /**
+   * @deprecated Use `sendLocation({ threadId, latitude, longitude, name, address })` instead.
+   * Positional arguments will be removed in the next major version.
+   */
+  async sendLocation(
     threadId: string,
     latitude: number,
     longitude: number,
     options?: { name?: string; address?: string }
+  ): Promise<RawMessage<WAMessage>>;
+  async sendLocation(
+    threadIdOrArgs: string | BaileysSendLocationArgs,
+    latitude?: number,
+    longitude?: number,
+    options?: { name?: string; address?: string }
   ): Promise<RawMessage<WAMessage>> {
-    assertValidLatitude(latitude);
-    assertValidLongitude(longitude);
+    const resolved = normalizeSendLocationArgs(
+      threadIdOrArgs,
+      latitude,
+      longitude,
+      options
+    );
+    const { threadId } = resolved;
+
+    assertValidLatitude(resolved.latitude);
+    assertValidLongitude(resolved.longitude);
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
     const sent = await socket.sendMessage(jid, {
       location: {
-        degreesLatitude: latitude,
-        degreesLongitude: longitude,
-        name: options?.name,
-        address: options?.address,
+        degreesLatitude: resolved.latitude,
+        degreesLongitude: resolved.longitude,
+        name: resolved.name,
+        address: resolved.address,
       },
     });
     return this._toRawMessage(sent, threadId);
@@ -826,39 +870,71 @@ export class BaileysAdapter
    *
    * @example
    * ```typescript
-   * await whatsapp.sendPoll(thread.threadId, "What time works for the call?", [
-   *   "10:00 AM",
-   *   "2:00 PM",
-   *   "5:00 PM",
-   * ]);
+   * await whatsapp.sendPoll({
+   *   threadId: thread.threadId,
+   *   question: "What time works for the call?",
+   *   options: ["10:00 AM", "2:00 PM", "5:00 PM"],
+   * });
    *
    * // With arbitrary metadata round-tripped to onPollVote:
-   * await whatsapp.sendPoll(thread.threadId, "Lunch?", ["A", "B"], 1, {
+   * await whatsapp.sendPoll({
+   *   threadId: thread.threadId,
+   *   question: "Lunch?",
+   *   options: ["A", "B"],
    *   metadata: { askedBy: userId },
    * });
    * ```
+   */
+  async sendPoll(args: BaileysSendPollArgs): Promise<RawMessage<WAMessage>>;
+  /**
+   * @deprecated Use `sendPoll({ threadId, question, options, selectableCount, metadata })` instead.
+   * Positional arguments will be removed in the next major version.
    */
   async sendPoll(
     threadId: string,
     question: string,
     options: string[],
+    selectableCount?: number,
+    sendOptions?: BaileysSendPollOptions
+  ): Promise<RawMessage<WAMessage>>;
+  async sendPoll(
+    threadIdOrArgs: string | BaileysSendPollArgs,
+    question?: string,
+    options?: string[],
     selectableCount = 1,
     sendOptions?: BaileysSendPollOptions
   ): Promise<RawMessage<WAMessage>> {
-    assertValidPoll(question, options, selectableCount);
+    const resolved = normalizeSendPollArgs(
+      threadIdOrArgs,
+      question,
+      options,
+      selectableCount,
+      sendOptions
+    );
+    const { threadId } = resolved;
+
+    assertValidPoll(
+      resolved.question,
+      resolved.options,
+      resolved.selectableCount
+    );
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
     const sent = await socket.sendMessage(jid, {
-      poll: { name: question, values: options, selectableCount },
+      poll: {
+        name: resolved.question,
+        values: resolved.options,
+        selectableCount: resolved.selectableCount,
+      },
     });
 
     await this._rememberPoll(
       sent,
       threadId,
-      question,
-      options,
-      sendOptions?.metadata
+      resolved.question,
+      resolved.options,
+      resolved.metadata
     );
 
     return this._toRawMessage(sent, threadId);
@@ -940,7 +1016,11 @@ export class BaileysAdapter
    * });
    *
    * // Votes scoped to a single poll.
-   * const poll = await wa.sendPoll(thread.threadId, "Lunch?", ["A", "B"]);
+   * const poll = await wa.sendPoll({
+   *   threadId: thread.threadId,
+   *   question: "Lunch?",
+   *   options: ["A", "B"],
+   * });
    * wa.onPollVote(poll.id, async (vote) => {
    *   await thread.post(`${vote.voter.userName} picked ${vote.selectedOptions[0]}`);
    * });
@@ -1332,6 +1412,65 @@ function assertValidLongitude(longitude: number): void {
       `sendLocation: longitude must be between -180 and 180. Received ${longitude}.`
     );
   }
+}
+
+function normalizeMarkReadArgs(
+  threadIdOrArgs: string | BaileysMarkReadArgs,
+  messageIds?: string[],
+  participant?: string
+): BaileysMarkReadArgs {
+  if (typeof threadIdOrArgs === "string") {
+    return {
+      threadId: threadIdOrArgs,
+      messageIds: messageIds ?? [],
+      participant,
+    };
+  }
+  return threadIdOrArgs;
+}
+
+function normalizeSendLocationArgs(
+  threadIdOrArgs: string | BaileysSendLocationArgs,
+  latitude?: number,
+  longitude?: number,
+  options?: { name?: string; address?: string }
+): BaileysSendLocationArgs {
+  if (typeof threadIdOrArgs === "string") {
+    return {
+      threadId: threadIdOrArgs,
+      latitude: latitude as number,
+      longitude: longitude as number,
+      name: options?.name,
+      address: options?.address,
+    };
+  }
+  return threadIdOrArgs;
+}
+
+function normalizeSendPollArgs(
+  threadIdOrArgs: string | BaileysSendPollArgs,
+  question?: string,
+  options?: string[],
+  selectableCount = 1,
+  sendOptions?: BaileysSendPollOptions
+): Required<Pick<BaileysSendPollArgs, "threadId" | "question" | "options" | "selectableCount">> &
+  Pick<BaileysSendPollArgs, "metadata"> {
+  if (typeof threadIdOrArgs === "string") {
+    return {
+      threadId: threadIdOrArgs,
+      question: question as string,
+      options: options as string[],
+      selectableCount,
+      metadata: sendOptions?.metadata,
+    };
+  }
+  return {
+    threadId: threadIdOrArgs.threadId,
+    question: threadIdOrArgs.question,
+    options: threadIdOrArgs.options,
+    selectableCount: threadIdOrArgs.selectableCount ?? 1,
+    metadata: threadIdOrArgs.metadata,
+  };
 }
 
 // ---------------------------------------------------------------------------

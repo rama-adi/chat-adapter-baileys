@@ -5,8 +5,11 @@ export { isBaileysAdapter, requireBaileysAdapter } from "./guards.js";
 export type {
   BaileysAdapterConfig,
   BaileysGroupParticipant,
+  BaileysMarkReadArgs,
   BaileysPollVote,
   BaileysPollVoteHandler,
+  BaileysSendLocationArgs,
+  BaileysSendPollArgs,
   BaileysSendPollOptions,
   BaileysThreadId,
   BaileysTrackedPoll,
