@@ -1,6 +1,6 @@
 {
     "name": "chat-adapter-baileys",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "description": "WhatsApp (Baileys) adapter for Chat SDK",
     "type": "module",
     "main": "./dist/index.js",
@@ -28,7 +28,7 @@
     },
     "dependencies": {
         "@chat-adapter/shared": "^4.0.0",
-        "baileys": "7.0.0-rc.9",
+        "baileys": ">=7.0.0-rc13 <8",
         "mdast": "^3.0.0"
     },
     "devDependencies": {
