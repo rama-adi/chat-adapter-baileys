@@ -51,10 +51,6 @@ jobs:
 
       - name: Publish to npm
         run: |
-          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
-            TAG=beta
-          else
-            TAG=latest
-          fi
+          TAG=v1
           echo "Publishing with dist-tag: $TAG"
           npm publish --tag "$TAG" --access public
