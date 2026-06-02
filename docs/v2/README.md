@@ -118,4 +118,4 @@ bot.onSubscribedMessage(async (thread, message) => {
 
 - **npm:** `chat-adapter-baileys`
 - **Repository:** Part of the Chat SDK ecosystem
-- **Baileys version:** `7.0.0-rc.9`
+- **Baileys version:** `>=7.0.0-rc13 <8`
