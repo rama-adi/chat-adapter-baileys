@@ -52,7 +52,7 @@ Update your `package.json` to require the newer versions:
   },
   "dependencies": {
     "@chat-adapter/shared": "^4.0.0",
-    "baileys": "7.0.0-rc.9"
+    "baileys": ">=7.0.0-rc13 <8"
   }
 }
 ```
@@ -66,7 +66,7 @@ Update your `package.json` to require the newer versions:
   },
   "dependencies": {
     "@chat-adapter/shared": "^4.24.0",
-    "baileys": "7.0.0-rc.9"
+    "baileys": ">=7.0.0-rc13 <8"
   },
   "devDependencies": {
     "@chat-adapter/state-memory": "^4.24.0",
@@ -212,7 +212,7 @@ If your v1 code relied on loose input handling, fix the caller rather than tryin
   - `sendLocation({ ... })`
   - `sendPoll({ ... })`
   - `fetchGroupParticipants(...)`
-- `baileys` remains on `7.0.0-rc.9`
+- `baileys` remains on the patched `>=7.0.0-rc13 <8` line
 - Cards still degrade to plain-text fallback
 - WhatsApp still has no real sub-threads
 - History fetching still returns empty unless you persist your own message store
