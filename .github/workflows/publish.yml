@@ -51,6 +51,6 @@ jobs:
 
       - name: Publish to npm
         run: |
-          TAG=v1
+          TAG=legacy
           echo "Publishing with dist-tag: $TAG"
           npm publish --tag "$TAG" --access public
