@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { ChatInstance } from "chat";
 import type { WAMessage } from "baileys";
 import {
+  decryptPollVote,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   generateMessageIDV2,
@@ -17,7 +18,11 @@ import type { BaileysAdapterConfig } from "./types.js";
 const { mockSocket, mockMakeWASocket } = vi.hoisted(() => {
   const socket = {
     ev: { process: vi.fn() },
-    user: { id: "15551234567@s.whatsapp.net" },
+    user: {
+      id: "15551234567@s.whatsapp.net",
+      lid: undefined as string | undefined,
+      phoneNumber: undefined as string | undefined,
+    },
     sendMessage: vi.fn(),
     groupMetadata: vi.fn(),
     sendPresenceUpdate: vi.fn(),
@@ -151,6 +156,19 @@ function makeAdapter(overrides?: Partial<BaileysAdapterConfig>): BaileysAdapter 
   });
 }
 
+function mockDefaultPollVoteDecrypt(): void {
+  vi.mocked(decryptPollVote).mockImplementation(
+    ({ encPayload }: { encPayload: Uint8Array }) => {
+      const decoded = Buffer.from(encPayload).toString("utf8");
+      if (decoded.length === 0) return { selectedOptions: [] } as never;
+      const names = decoded.split("|");
+      return {
+        selectedOptions: names.map((n) => createHash("sha256").update(n).digest()),
+      } as never;
+    }
+  );
+}
+
 function makeDMMessage(overrides?: Partial<WAMessage>): WAMessage {
   return {
     key: { remoteJid: "15551234567@s.whatsapp.net", id: "msg-dm-1", fromMe: false },
@@ -219,6 +237,9 @@ describe("BaileysAdapter", () => {
       capturedEvHandler = handler;
     });
     mockSocket.user.id = "15551234567@s.whatsapp.net";
+    mockSocket.user.lid = undefined;
+    mockSocket.user.phoneNumber = undefined;
+    mockAuthState.state.creds = {} as never;
     mockSocket.sendMessage.mockImplementation(
       async (
         jid: string,
@@ -234,6 +255,7 @@ describe("BaileysAdapter", () => {
       })
     );
     mockSocket.requestPairingCode.mockResolvedValue("PAIR-1234");
+    mockDefaultPollVoteDecrypt();
 
     adapter = makeAdapter();
     await adapter.initialize(mockChat);
@@ -241,6 +263,7 @@ describe("BaileysAdapter", () => {
 
   afterEach(() => {
     capturedEvHandler = null;
+    vi.useRealTimers();
   });
 
   // ── Thread ID ──────────────────────────────────────────────────────────────
@@ -1163,13 +1186,21 @@ describe("BaileysAdapter", () => {
 
     describe("setPresence (WhatsApp extension)", () => {
       it("calls sendPresenceUpdate with 'available'", async () => {
+        await capturedEvHandler!({ "connection.update": { connection: "open" } });
         await adapter.setPresence("available");
         expect(mockSocket.sendPresenceUpdate).toHaveBeenCalledWith("available");
       });
 
       it("calls sendPresenceUpdate with 'unavailable'", async () => {
+        await capturedEvHandler!({ "connection.update": { connection: "open" } });
         await adapter.setPresence("unavailable");
         expect(mockSocket.sendPresenceUpdate).toHaveBeenCalledWith("unavailable");
+      });
+
+      it("throws before the WhatsApp connection is open", async () => {
+        await expect(adapter.setPresence("available")).rejects.toThrow(
+          /wait for WhatsApp to open/
+        );
       });
     });
 
@@ -1249,7 +1280,14 @@ describe("BaileysAdapter", () => {
         await adapter.sendPoll(threadId, "Best time?", ["10am", "2pm", "5pm"]);
         expect(mockSocket.sendMessage).toHaveBeenCalledWith(
           "15551234567@s.whatsapp.net",
-          { poll: { name: "Best time?", values: ["10am", "2pm", "5pm"], selectableCount: 1 } },
+          {
+            poll: {
+              name: "Best time?",
+              values: ["10am", "2pm", "5pm"],
+              selectableCount: 1,
+              messageSecret: expect.any(Buffer),
+            },
+          },
           generatedMessageOptions
         );
       });
@@ -1269,7 +1307,14 @@ describe("BaileysAdapter", () => {
         });
         expect(mockSocket.sendMessage).toHaveBeenCalledWith(
           "15551234567@s.whatsapp.net",
-          { poll: { name: "Best time?", values: ["10am", "2pm", "5pm"], selectableCount: 2 } },
+          {
+            poll: {
+              name: "Best time?",
+              values: ["10am", "2pm", "5pm"],
+              selectableCount: 2,
+              messageSecret: expect.any(Buffer),
+            },
+          },
           generatedMessageOptions
         );
         expect(mockState.set).toHaveBeenCalledWith(
@@ -1308,29 +1353,31 @@ describe("BaileysAdapter", () => {
 
       it("persists poll metadata in the SDK state adapter on send", async () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
-        const secret = Buffer.alloc(32, 7);
         mockSocket.sendMessage.mockResolvedValueOnce({
           key: { id: "poll-1", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
           message: {
             pollCreationMessageV3: {},
-            messageContextInfo: { messageSecret: secret },
           },
         });
 
         await adapter.sendPoll(threadId, "Time?", ["10am", "2pm"]);
+        const [, payload] = mockSocket.sendMessage.mock.calls[0] as [
+          string,
+          { poll: { messageSecret: Buffer } },
+        ];
 
         expect(mockState.set).toHaveBeenCalledWith(
           "baileys:baileys:poll:poll-1",
           expect.objectContaining({
             question: "Time?",
             options: ["10am", "2pm"],
-            messageSecret: secret.toString("base64"),
+            messageSecret: payload.poll.messageSecret.toString("base64"),
           }),
           30 * 24 * 60 * 60 * 1000
         );
       });
 
-      it("warns and skips storage when the sent poll has no messageSecret", async () => {
+      it("stores the generated messageSecret even when Baileys returns no secret", async () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
         mockSocket.sendMessage.mockResolvedValueOnce({
           key: { id: "poll-no-secret", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
@@ -1338,10 +1385,17 @@ describe("BaileysAdapter", () => {
         });
 
         await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+        const [, payload] = mockSocket.sendMessage.mock.calls[0] as [
+          string,
+          { poll: { messageSecret: Buffer } },
+        ];
 
-        expect(mockState.set).not.toHaveBeenCalled();
-        expect(mockLogger.warn).toHaveBeenCalledWith(
-          expect.stringContaining("messageSecret")
+        expect(mockState.set).toHaveBeenCalledWith(
+          "baileys:baileys:poll:poll-no-secret",
+          expect.objectContaining({
+            messageSecret: payload.poll.messageSecret.toString("base64"),
+          }),
+          expect.anything()
         );
       });
 
@@ -1553,6 +1607,111 @@ describe("BaileysAdapter", () => {
         expect(built.author.userId).toBe("15550000000@s.whatsapp.net");
         expect(built.author.isMe).toBe(false);
         expect(built.author.isBot).toBe(false);
+      });
+
+      it("retries poll vote decryption with raw device JIDs", async () => {
+        const baileys = await import("baileys");
+        const decryptMock = vi.mocked(baileys.decryptPollVote);
+        decryptMock.mockImplementation((vote, ctx) => {
+          if (
+            ctx.pollCreatorJid === "15550000000:5@s.whatsapp.net" &&
+            ctx.voterJid === "15550000000:5@s.whatsapp.net"
+          ) {
+            return {
+              selectedOptions: [createHash("sha256").update("A").digest()],
+            } as never;
+          }
+          throw new Error("wrong decrypt context");
+        });
+
+        mockSocket.user.id = "15550000000:5@s.whatsapp.net";
+        const jid = "15551234567@s.whatsapp.net";
+        const threadId = await sendStubbedPoll({
+          jid,
+          pollId: "poll-device-jid",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-device-jid",
+                chosen: ["A"],
+                remoteJid: jid,
+                fromMe: true,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).toHaveBeenCalledWith(
+          adapter,
+          threadId,
+          expect.any(Function)
+        );
+        expect(decryptMock).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            pollCreatorJid: "15550000000:5@s.whatsapp.net",
+            voterJid: "15550000000:5@s.whatsapp.net",
+          })
+        );
+      });
+
+      it("retries poll vote decryption with the live socket LID identity", async () => {
+        const baileys = await import("baileys");
+        const decryptMock = vi.mocked(baileys.decryptPollVote);
+        decryptMock.mockImplementation((vote, ctx) => {
+          if (
+            ctx.pollCreatorJid === "107000000000000@lid" &&
+            ctx.voterJid === "107082225311887@lid"
+          ) {
+            return {
+              selectedOptions: [createHash("sha256").update("A").digest()],
+            } as never;
+          }
+          throw new Error("wrong decrypt context");
+        });
+
+        mockSocket.user.id = "15550000000@s.whatsapp.net";
+        mockSocket.user.lid = "107000000000000@lid";
+        const jid = "107082225311887@lid";
+        const threadId = await sendStubbedPoll({
+          jid,
+          pollId: "poll-lid-context",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-lid-context",
+                chosen: ["A"],
+                remoteJid: jid,
+                fromMe: false,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).toHaveBeenCalledWith(
+          adapter,
+          threadId,
+          expect.any(Function)
+        );
+        expect(decryptMock).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            pollCreatorJid: "107000000000000@lid",
+            voterJid: "107082225311887@lid",
+          })
+        );
       });
 
       it("invokes onPollVote handlers with the structured decrypted payload", async () => {
@@ -1881,8 +2040,13 @@ describe("BaileysAdapter", () => {
 
         expect(mockChat.processMessage).not.toHaveBeenCalled();
         expect(mockLogger.error).toHaveBeenCalledWith(
-          expect.stringContaining("decrypt poll vote"),
-          expect.any(Error)
+          "Failed to decrypt poll vote",
+          expect.objectContaining({
+            error: expect.any(Error),
+            pollMessageId: "poll-broken",
+            pollCreatorJids: expect.arrayContaining(["15551234567@s.whatsapp.net"]),
+            voterJids: expect.arrayContaining(["15551234567@s.whatsapp.net"]),
+          })
         );
       });
 
@@ -2424,7 +2588,8 @@ describe("BaileysAdapter", () => {
   });
 
   describe("QR and pairing callbacks", () => {
-    it("emits QR and pairing code once while connecting", async () => {
+    it("emits QR immediately and requests pairing code once after a short delay", async () => {
+      vi.useFakeTimers();
       const onQR = vi.fn();
       const onPairingCode = vi.fn();
       adapter = makeAdapter({
@@ -2443,8 +2608,62 @@ describe("BaileysAdapter", () => {
       });
 
       expect(onQR).toHaveBeenCalledTimes(2);
+      expect(onPairingCode).not.toHaveBeenCalled();
+      expect(mockSocket.requestPairingCode).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(3000);
+
       expect(onPairingCode).toHaveBeenCalledTimes(1);
       expect(mockSocket.requestPairingCode).toHaveBeenCalledWith("15551234567");
+    });
+
+    it("cancels a pending pairing code request when the socket closes", async () => {
+      vi.useFakeTimers();
+      const onPairingCode = vi.fn();
+      adapter = makeAdapter({
+        phoneNumber: "15551234567",
+        onPairingCode,
+      });
+      await adapter.initialize(mockChat);
+      await adapter.connect();
+
+      await capturedEvHandler!({
+        "connection.update": { connection: "connecting", qr: "qr-value" },
+      });
+      await capturedEvHandler!({
+        "connection.update": {
+          connection: "close",
+          lastDisconnect: { error: { output: { statusCode: 401 } } },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(onPairingCode).not.toHaveBeenCalled();
+      expect(mockSocket.requestPairingCode).not.toHaveBeenCalled();
+    });
+
+    it("does not request a pairing code for registered credentials", async () => {
+      const onPairingCode = vi.fn();
+      adapter = makeAdapter({
+        auth: {
+          state: {
+            creds: { registered: true } as never,
+            keys: {} as never,
+          },
+          saveCreds: vi.fn(),
+        },
+        phoneNumber: "15551234567",
+        onPairingCode,
+      });
+      await adapter.initialize(mockChat);
+      await adapter.connect();
+
+      await capturedEvHandler!({
+        "connection.update": { connection: "connecting", qr: "qr-value" },
+      });
+
+      expect(onPairingCode).not.toHaveBeenCalled();
+      expect(mockSocket.requestPairingCode).not.toHaveBeenCalled();
     });
   });
 });

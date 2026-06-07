@@ -4,3 +4,4 @@ coverage/
 *.tsbuildinfo
 .env
 auth_info/
+auth_info*/

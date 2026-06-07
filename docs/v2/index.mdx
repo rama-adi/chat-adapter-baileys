@@ -194,7 +194,7 @@ bot.onSubscribedMessage(async (thread, message) => {
   const wa = requireBaileysAdapter(thread);
   await wa.reply(message, "Got it!");
   await wa.markRead({
-    threadId: thread.threadId,
+    threadId: thread.id,
     messageIds: [message.id],
   });
 });

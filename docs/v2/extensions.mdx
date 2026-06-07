@@ -20,7 +20,7 @@ In `v2`, the clean way to access these methods from Chat SDK handlers is through
 - `isBaileysAdapter(adapter)`: branch on platform with full type narrowing
 - `requireBaileysAdapter(thread)`: assert that the current context is WhatsApp and get the concrete adapter
 
-For multi-argument extension methods, `v2.1.0-beta.2` adds named-argument overloads. The old positional calls still work for now, but they are deprecated and will be removed in the next major version. The object form is now the recommended style because it scales better as method signatures grow.
+For multi-argument extension methods, `2.1.0` adds named-argument overloads. The old positional calls still work for now, but they are deprecated and will be removed in the next major version. The object form is now the recommended style because it scales better as method signatures grow.
 
 ---
 
@@ -44,7 +44,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 
   if (isBaileysAdapter(adapter)) {
     await adapter.markRead({
-      threadId: thread.threadId,
+      threadId: thread.id,
       messageIds: [message.id],
       participant: thread.isDM ? undefined : message.author.userId,
     });
@@ -144,7 +144,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 
   // Mark this message as read immediately on receipt
   await wa.markRead({
-    threadId: thread.threadId,
+    threadId: thread.id,
     messageIds: [message.id],
     participant: thread.isDM ? undefined : message.author.userId,
   });
@@ -158,7 +158,7 @@ You can batch multiple message IDs in one call:
 ```ts
 const ids = messages.map(m => m.id);
 await requireBaileysAdapter(thread).markRead({
-  threadId: thread.threadId,
+  threadId: thread.id,
   messageIds: ids,
 });
 ```
@@ -192,9 +192,9 @@ Set the bot's global WhatsApp presence, controlling whether it appears as online
 The Chat SDK's `thread.startTyping()` sends a per-chat "composing" indicator. This method controls the bot's top-level presence status, visible on the bot's profile.
 
 ```ts
-// Mark the bot as online when it starts
-await bot.initialize();
-await whatsapp.connect();
+// After the WhatsApp socket is open, mark the bot as online.
+// In app code, do this from your connection-open hook or from a command
+// after the bot is already receiving messages.
 await whatsapp.setPresence("available");
 
 // Mark the bot as offline during maintenance
@@ -206,7 +206,7 @@ await whatsapp.setPresence("unavailable");
 setPresence(presence: "available" | "unavailable"): Promise<void>
 ```
 
-- Throws if the socket is not connected.
+- Throws if the socket is not connected and open yet.
 - Per-chat "composing" presence is handled separately by `thread.startTyping()`.
 
 ---
@@ -221,7 +221,7 @@ import { requireBaileysAdapter } from "chat-adapter-baileys";
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.text.toLowerCase().includes("office")) {
     await requireBaileysAdapter(thread).sendLocation({
-      threadId: thread.threadId,
+      threadId: thread.id,
       latitude: 37.7749,
       longitude: -122.4194,
       name: "HQ Office",
@@ -235,7 +235,7 @@ Without a name/address, a bare coordinate pin is sent:
 
 ```ts
 await requireBaileysAdapter(thread).sendLocation({
-  threadId: thread.threadId,
+  threadId: thread.id,
   latitude: 51.5074,
   longitude: -0.1278,
 });
@@ -274,14 +274,14 @@ Send a native WhatsApp poll. Polls let users tap options directly in the chat. T
 ```ts
 // Single-choice poll (default)
 await requireBaileysAdapter(thread).sendPoll({
-  threadId: thread.threadId,
+  threadId: thread.id,
   question: "When should we hold the team sync?",
   options: ["Monday 10am", "Wednesday 2pm", "Friday 4pm"],
 });
 
 // Multi-choice poll, users can pick up to 2 options
 await requireBaileysAdapter(thread).sendPoll({
-  threadId: thread.threadId,
+  threadId: thread.id,
   question: "Which topics should we cover?",
   options: ["Design review", "Sprint planning", "Bugs", "Roadmap"],
   selectableCount: 2,
@@ -323,7 +323,7 @@ Instead of maintaining your own `pollMessageId → context` map, pass a `metadat
 
 ```ts
 const poll = await wa.sendPoll({
-  threadId: thread.threadId,
+  threadId: thread.id,
   question: "Lunch?",
   options: ["Pizza", "Tacos"],
   metadata: { askedBy: triggeringUserId },
@@ -387,7 +387,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 
   const wa = requireBaileysAdapter(thread);
   const poll = await wa.sendPoll({
-    threadId: thread.threadId,
+    threadId: thread.id,
     question: "Where for lunch?",
     options: ["Pizza", "Tacos", "Sushi"],
   });
@@ -535,7 +535,7 @@ bot.onNewMention(async (thread, message) => {
   if (thread.isDM) return;
 
   const participants = await requireBaileysAdapter(thread)
-    .fetchGroupParticipants(thread.threadId);
+    .fetchGroupParticipants(thread.id);
   const admins = participants.filter(p => p.isAdmin);
   const total = participants.length;
 
@@ -553,7 +553,7 @@ bot.onSubscribedMessage(async (thread, message) => {
   if (thread.isDM || message.text !== "!shutdown") return;
 
   const participants = await requireBaileysAdapter(thread)
-    .fetchGroupParticipants(thread.threadId);
+    .fetchGroupParticipants(thread.id);
   const sender = participants.find(p => p.userId === message.author.userId);
 
   if (!sender?.isAdmin) {

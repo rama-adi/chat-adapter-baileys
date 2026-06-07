@@ -33,7 +33,7 @@ import { ValidationError } from "@chat-adapter/shared";
 bot.onSubscribedMessage(async (thread, message) => {
   try {
     await requireBaileysAdapter(thread).sendLocation(
-      thread.threadId,
+      thread.id,
       999,  // Invalid latitude
       -122.4194
     );
@@ -77,7 +77,7 @@ adapterName: "baileys-main"  // ✅ Valid
 
 ### Socket not connected
 
-**When it happens:** Calling any method that requires an active connection before `connect()` or after `disconnect()`.
+**When it happens:** Calling any method that requires an active connection before `connect()`, before the WhatsApp socket is open, or after `disconnect()`.
 
 **Affected methods:** All sending methods (`postMessage`, `reply`, `sendPoll`, etc.) plus `markRead`, `setPresence`, `fetchGroupParticipants`.
 
@@ -86,14 +86,17 @@ const wa = createBaileysAdapter({ auth: { state, saveCreds } });
 // Forgot to call wa.connect()
 
 await wa.setPresence("available");
-// ValidationError: Socket not connected. Call adapter.connect() first.
+// ValidationError: Socket not connected. Call adapter.connect() and wait for WhatsApp to open first.
 ```
 
 **Fix:** Ensure proper startup sequence:
 
 ```ts
 await bot.initialize();
-await wa.connect();  // ✅ Connect before using methods
+await wa.connect();  // Start the WebSocket
+
+// ✅ Use setPresence only after WhatsApp is open, for example from an
+// already-running command handler or your own connection-open integration.
 await wa.setPresence("available");
 ```
 
@@ -253,7 +256,7 @@ await wa.fetchGroupParticipants(threadId);
 
 ```ts
 if (!thread.isDM) {
-  const participants = await wa.fetchGroupParticipants(thread.threadId);
+  const participants = await wa.fetchGroupParticipants(thread.id);
   // ...
 }
 ```

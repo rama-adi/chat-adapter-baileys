@@ -33,7 +33,7 @@ const wa = createBaileysExtensions(waMain, waSales);
 
 bot.onSubscribedMessage(async (thread, message) => {
   await wa.reply(message, "Got it!");           // routes to the right account
-  await wa.markRead(thread.threadId, [message.id]);
+  await wa.markRead(thread.id, [message.id]);
 });
 
 await wa.setPresence("available"); // sets presence on both accounts
@@ -86,7 +86,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 
   // Mark this message as read immediately on receipt
   await whatsapp.markRead(
-    thread.threadId,
+    thread.id,
     [message.id],
     thread.isDM ? undefined : message.author.userId
   );
@@ -99,7 +99,7 @@ You can batch multiple message IDs in one call:
 
 ```ts
 const ids = messages.map(m => m.id);
-await whatsapp.markRead(thread.threadId, ids);
+await whatsapp.markRead(thread.id, ids);
 ```
 
 **Signature:**
@@ -124,9 +124,9 @@ Set the bot's global WhatsApp presence, controlling whether it appears as online
 The Chat SDK's `thread.startTyping()` sends a per-chat "composing" indicator. This method controls the bot's top-level presence status, visible on the bot's profile.
 
 ```ts
-// Mark the bot as online when it starts
-await bot.initialize();
-await whatsapp.connect();
+// After the WhatsApp socket is open, mark the bot as online.
+// In app code, do this from your connection-open hook or from a command
+// after the bot is already receiving messages.
 await whatsapp.setPresence("available");
 
 // Mark the bot as offline during maintenance
@@ -139,7 +139,7 @@ await whatsapp.setPresence("unavailable");
 setPresence(presence: "available" | "unavailable"): Promise<void>
 ```
 
-- Throws if the socket is not connected.
+- Throws if the socket is not connected and open yet.
 - Per-chat "composing" presence is handled separately by `thread.startTyping()`.
 
 ---
@@ -152,7 +152,7 @@ Send a native WhatsApp location message (shown as an interactive map pin). The C
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.text.toLowerCase().includes("office")) {
     await whatsapp.sendLocation(
-      thread.threadId,
+      thread.id,
       37.7749,    // latitude
       -122.4194,  // longitude
       {
@@ -167,7 +167,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 Without a name/address, a bare coordinate pin is sent:
 
 ```ts
-await whatsapp.sendLocation(thread.threadId, 51.5074, -0.1278);
+await whatsapp.sendLocation(thread.id, 51.5074, -0.1278);
 ```
 
 **Signature:**
@@ -195,14 +195,14 @@ Send a native WhatsApp poll. Polls let users tap options directly in the chat. T
 ```ts
 // Single-choice poll (default)
 await whatsapp.sendPoll(
-  thread.threadId,
+  thread.id,
   "When should we hold the team sync?",
   ["Monday 10am", "Wednesday 2pm", "Friday 4pm"]
 );
 
 // Multi-choice poll, users can pick up to 2 options
 await whatsapp.sendPoll(
-  thread.threadId,
+  thread.id,
   "Which topics should we cover?",
   ["Design review", "Sprint planning", "Bugs", "Roadmap"],
   2   // selectableCount
@@ -239,7 +239,7 @@ Fetch the full participant list for a group thread, including admin roles. The C
 bot.onNewMention(async (thread, message) => {
   if (thread.isDM) return;
 
-  const participants = await whatsapp.fetchGroupParticipants(thread.threadId);
+  const participants = await whatsapp.fetchGroupParticipants(thread.id);
   const admins = participants.filter(p => p.isAdmin);
   const total = participants.length;
 
@@ -256,7 +256,7 @@ Check if the sender is an admin before allowing privileged commands:
 bot.onSubscribedMessage(async (thread, message) => {
   if (thread.isDM || message.text !== "!shutdown") return;
 
-  const participants = await whatsapp.fetchGroupParticipants(thread.threadId);
+  const participants = await whatsapp.fetchGroupParticipants(thread.id);
   const sender = participants.find(p => p.userId === message.author.userId);
 
   if (!sender?.isAdmin) {

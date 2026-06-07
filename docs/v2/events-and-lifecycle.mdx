@@ -142,7 +142,7 @@ const whatsapp = createBaileysAdapter({
     Set `phoneNumber` (E.164 without `+`) and `onPairingCode` in the config
   </Step>
   <Step>
-    When the socket starts connecting (or a QR code is emitted), the adapter calls `socket.requestPairingCode(phoneNumber)`
+    Shortly after a fresh, unregistered socket starts connecting (or a QR code is emitted), the adapter calls `socket.requestPairingCode(phoneNumber)`
   </Step>
   <Step>
     Your `onPairingCode` callback receives the 8-digit code string

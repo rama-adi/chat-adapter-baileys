@@ -134,8 +134,9 @@ export interface BaileysAdapterConfig {
    *
    * Example: `+1 (234) 567-8901` → `"12345678901"`
    *
-   * When set, the adapter calls `sock.requestPairingCode()` as soon as
-   * the socket begins connecting, and invokes `onPairingCode` with the result.
+   * When set, the adapter requests a pairing code shortly after a fresh,
+   * unregistered socket begins connecting, then invokes `onPairingCode` with
+   * the result.
    */
   phoneNumber?: string;
 

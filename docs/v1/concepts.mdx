@@ -17,9 +17,9 @@ In the Chat SDK, a **thread** is a container for a sequence of messages (typical
 Each WhatsApp JID maps 1-to-1 to a Chat SDK thread. There is no concept of sub-threads or topics inside a WhatsApp conversation, so a thread and its channel are always the same conversation.
 
 ```ts
-// When the bot receives a message, thread.threadId contains the encoded JID:
+// When the bot receives a message, thread.id contains the encoded JID:
 bot.onSubscribedMessage(async (thread, message) => {
-  console.log(thread.threadId); // e.g. "baileys:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ"
+  console.log(thread.id); // e.g. "baileys:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ"
   console.log(thread.isDM);     // true for DMs, false for groups
 });
 ```
@@ -151,7 +151,7 @@ const bot = new Chat({ /* ... */ });
 
 // Persist every incoming message
 bot.onAnyMessage(async (thread, message) => {
-  const jid = thread.threadId;
+  const jid = thread.id;
   const existing = messageStore.get(jid) ?? [];
   existing.push(message.raw);
   messageStore.set(jid, existing);

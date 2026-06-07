@@ -100,7 +100,7 @@ const wa = createBaileysExtensions(waMain, waSales);
 
 bot.onSubscribedMessage(async (thread, message) => {
   await wa.reply(message, "Got it!");
-  await wa.markRead(thread.threadId, [message.id]);
+  await wa.markRead(thread.id, [message.id]);
 });
 ```
 
@@ -113,7 +113,7 @@ bot.onSubscribedMessage(async (thread, message) => {
   const wa = requireBaileysAdapter(thread);
   await wa.reply(message, "Got it!");
   await wa.markRead({
-    threadId: thread.threadId,
+    threadId: thread.id,
     messageIds: [message.id],
     participant: thread.isDM ? undefined : message.author.userId,
   });
@@ -130,7 +130,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 
   if (isBaileysAdapter(adapter)) {
     await adapter.markRead({
-      threadId: thread.threadId,
+      threadId: thread.id,
       messageIds: [message.id],
       participant: thread.isDM ? undefined : message.author.userId,
     });
@@ -217,7 +217,7 @@ Version 2 is less permissive in a few places. Check your code for these patterns
   - Negative or non-integer `selectableCount`
 
 <Callout type="info">
-As of `2.1.0-beta.2`, `markRead`, `sendLocation`, and `sendPoll` also accept a single named-arguments object. The original positional forms still work, but they are now deprecated and will be removed in the next major version.
+As of `2.1.0`, `markRead`, `sendLocation`, and `sendPoll` also accept a single named-arguments object. The original positional forms still work, but they are now deprecated and will be removed in the next major version.
 </Callout>
 
 If your v1 code relied on loose input handling, fix the caller rather than trying to preserve the old behavior.

@@ -43,7 +43,7 @@ import makeWASocket, {
   type WAMessageKey,
   type WASocket,
 } from "baileys";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { BaileysFormatConverter } from "./format-converter.js";
 import type {
   BaileysAdapterConfig,
@@ -97,6 +97,7 @@ export class BaileysAdapter
   private _shouldReconnect = true;
   /** Guard so we only request a pairing code once per socket lifetime. */
   private _pairingCodeRequested = false;
+  private _pairingCodeRequestTimer: ReturnType<typeof setTimeout> | null = null;
   private _pollVoteSubscriptions: PollVoteSubscription[] = [];
   private _sentMessageIds = new Map<string, number>();
 
@@ -150,6 +151,7 @@ export class BaileysAdapter
   async disconnect(): Promise<void> {
     this._isConnected = false;
     this._shouldReconnect = false;
+    this._clearPairingCodeRequest();
     if (this._socket) {
       this._socket.end(undefined);
       this._socket = null;
@@ -177,6 +179,7 @@ export class BaileysAdapter
 
     this._socket = socket;
     this._pairingCodeRequested = false;
+    this._clearPairingCodeRequest();
 
     socket.ev.process(async (events) => {
       // ── credentials updated ─────────────────────────────────────────────────
@@ -193,22 +196,18 @@ export class BaileysAdapter
           await this._config.onQR(qr);
         }
 
-        // Pairing code — request once when the socket starts connecting
+        // Pairing code — request once only for fresh, unregistered credentials.
+        // Baileys may emit "connecting" before its WebSocket transport can
+        // accept IQ nodes, so defer the actual request briefly.
         if (
           this._config.phoneNumber &&
           this._config.onPairingCode &&
+          !state.creds.registered &&
           !this._pairingCodeRequested &&
+          !this._pairingCodeRequestTimer &&
           (connection === "connecting" || qr)
         ) {
-          this._pairingCodeRequested = true;
-          try {
-            const code = await socket.requestPairingCode(
-              this._config.phoneNumber
-            );
-            this._config.onPairingCode(code);
-          } catch (err) {
-            this._logger.error("Failed to request pairing code", err);
-          }
+          this._schedulePairingCodeRequest(socket);
         }
 
         if (connection === "open") {
@@ -218,6 +217,7 @@ export class BaileysAdapter
 
         if (connection === "close") {
           this._isConnected = false;
+          this._clearPairingCodeRequest();
           const statusCode = (
             lastDisconnect?.error as { output?: { statusCode?: number } }
           )?.output?.statusCode;
@@ -670,6 +670,38 @@ export class BaileysAdapter
     return this._socket;
   }
 
+  private _schedulePairingCodeRequest(socket: WASocket): void {
+    this._pairingCodeRequestTimer = setTimeout(() => {
+      this._pairingCodeRequestTimer = null;
+
+      if (
+        this._socket !== socket ||
+        this._config.auth.state.creds.registered ||
+        this._pairingCodeRequested ||
+        !this._config.phoneNumber ||
+        !this._config.onPairingCode
+      ) {
+        return;
+      }
+
+      this._pairingCodeRequested = true;
+      void socket
+        .requestPairingCode(this._config.phoneNumber)
+        .then((code) => this._config.onPairingCode?.(code))
+        .catch((err) => {
+          this._pairingCodeRequested = false;
+          this._logger.error("Failed to request pairing code", err);
+        });
+    }, 3000);
+  }
+
+  private _clearPairingCodeRequest(): void {
+    if (this._pairingCodeRequestTimer) {
+      clearTimeout(this._pairingCodeRequestTimer);
+      this._pairingCodeRequestTimer = null;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // WhatsApp extensions (not part of the Chat SDK Adapter interface)
   // ---------------------------------------------------------------------------
@@ -748,7 +780,7 @@ export class BaileysAdapter
    * ```typescript
    * bot.onSubscribedMessage(async (thread, message) => {
    *   await whatsapp.markRead({
-   *     threadId: thread.threadId,
+   *     threadId: thread.id,
    *     messageIds: [message.id],
    *     participant: thread.isDM ? undefined : message.author.userId,
    *   });
@@ -800,12 +832,19 @@ export class BaileysAdapter
    *
    * @example
    * ```typescript
+   * // Call this after the WhatsApp connection is open.
    * await whatsapp.setPresence("available");   // appears online
    * await whatsapp.setPresence("unavailable"); // appears offline
    * ```
    */
   async setPresence(presence: "available" | "unavailable"): Promise<void> {
-    const socket = this._requireSocket();
+    const socket = this._socket;
+    if (!socket || !this._isConnected) {
+      throw new ValidationError(
+        "baileys",
+        "Socket not connected. Call adapter.connect() and wait for WhatsApp to open first."
+      );
+    }
     await socket.sendPresenceUpdate(presence);
   }
 
@@ -818,7 +857,7 @@ export class BaileysAdapter
    * @example
    * ```typescript
    * await whatsapp.sendLocation({
-   *   threadId: thread.threadId,
+   *   threadId: thread.id,
    *   latitude: 37.7749,
    *   longitude: -122.4194,
    *   name: "San Francisco",
@@ -878,14 +917,14 @@ export class BaileysAdapter
    * @example
    * ```typescript
    * await whatsapp.sendPoll({
-   *   threadId: thread.threadId,
+   *   threadId: thread.id,
    *   question: "What time works for the call?",
    *   options: ["10:00 AM", "2:00 PM", "5:00 PM"],
    * });
    *
    * // With arbitrary metadata round-tripped to onPollVote:
    * await whatsapp.sendPoll({
-   *   threadId: thread.threadId,
+   *   threadId: thread.id,
    *   question: "Lunch?",
    *   options: ["A", "B"],
    *   metadata: { askedBy: userId },
@@ -928,11 +967,13 @@ export class BaileysAdapter
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
+    const messageSecret = randomBytes(32);
     const sent = await this._sendOne(socket, jid, {
       poll: {
         name: resolved.question,
         values: resolved.options,
         selectableCount: resolved.selectableCount,
+        messageSecret,
       },
     });
 
@@ -941,7 +982,8 @@ export class BaileysAdapter
       threadId,
       resolved.question,
       resolved.options,
-      resolved.metadata
+      resolved.metadata,
+      messageSecret
     );
 
     return this._toRawMessage(sent, threadId);
@@ -957,7 +999,7 @@ export class BaileysAdapter
    *
    * @example
    * ```typescript
-   * const participants = await whatsapp.fetchGroupParticipants(thread.threadId);
+   * const participants = await whatsapp.fetchGroupParticipants(thread.id);
    * const admins = participants.filter(p => p.isAdmin);
    * await thread.post(`Admins: ${admins.map(p => p.userId).join(", ")}`);
    * ```
@@ -1083,7 +1125,7 @@ export class BaileysAdapter
    *
    * // Votes scoped to a single poll.
    * const poll = await wa.sendPoll({
-   *   threadId: thread.threadId,
+   *   threadId: thread.id,
    *   question: "Lunch?",
    *   options: ["A", "B"],
    * });
@@ -1202,14 +1244,15 @@ export class BaileysAdapter
     threadId: string,
     question: string,
     options: string[],
-    metadata: unknown
+    metadata: unknown,
+    generatedMessageSecret?: Uint8Array
   ): Promise<void> {
     const id = sent?.key?.id;
     if (!this._chat || !id) {
       return;
     }
 
-    const secret = (
+    const secret = generatedMessageSecret ?? (
       sent?.message as { messageContextInfo?: { messageSecret?: Uint8Array } } | undefined
     )?.messageContextInfo?.messageSecret;
 
@@ -1263,24 +1306,64 @@ export class BaileysAdapter
       return;
     }
 
-    const meId = jidNormalizedUser(this._socket?.user?.id ?? "");
-    const voterJid = getKeyAuthor(msg.key, meId);
+    const ownJids = ownJidCandidates(
+      this._socket?.user,
+      this._config.auth.state.creds.me
+    );
     const messageSecret = new Uint8Array(
       Buffer.from(stored.messageSecret, "base64")
     );
 
-    let voteMsg: { selectedOptions?: Uint8Array[] | null };
-    try {
-      voteMsg = decryptPollVote(update.vote ?? {}, {
-        pollEncKey: messageSecret,
-        pollMsgId: pollMessageId,
-        pollCreatorJid: stored.creatorJid,
-        voterJid,
+    let voteMsg: { selectedOptions?: Uint8Array[] | null } | undefined;
+    let decryptError: unknown;
+    const pollCreatorJids = uniqueStrings([
+      ...ownJids.map((jid) => getKeyAuthor(update.pollCreationMessageKey, jid)),
+      ...authorCandidatesFromKey(update.pollCreationMessageKey),
+      stored.creatorJid,
+      ...ownJids,
+    ]);
+    const voterJids = uniqueStrings([
+      ...ownJids.map((jid) => getKeyAuthor(msg.key, jid)),
+      ...ownJids,
+      ...authorCandidatesFromKey(msg.key),
+    ]);
+
+    decrypt: {
+      for (const pollCreatorJid of pollCreatorJids) {
+        for (const voterJid of voterJids) {
+          try {
+            voteMsg = decryptPollVote(update.vote ?? {}, {
+              pollEncKey: messageSecret,
+              pollMsgId: pollMessageId,
+              pollCreatorJid,
+              voterJid,
+            });
+            break decrypt;
+          } catch (err) {
+            decryptError = err;
+          }
+        }
+      }
+    }
+
+    if (!voteMsg) {
+      this._logger.error("Failed to decrypt poll vote", {
+        error: decryptError,
+        pollMessageId,
+        pollCreationKey: update.pollCreationMessageKey,
+        voteKey: msg.key,
+        pollCreatorJids,
+        voterJids,
+        ownJids,
       });
-    } catch (err) {
-      this._logger.error("Failed to decrypt poll vote", err);
       return;
     }
+
+    /*
+     * `voteMsg` is assigned only by the labeled decrypt loop above. Keep this
+     * alias so TypeScript can follow the control flow without widening later.
+     */
+    const decryptedVote = voteMsg;
 
     const optionByHash = new Map<string, string>();
     for (const option of stored.options) {
@@ -1289,7 +1372,7 @@ export class BaileysAdapter
     }
 
     const selectedOptions: string[] = [];
-    for (const hashBytes of voteMsg.selectedOptions ?? []) {
+    for (const hashBytes of decryptedVote.selectedOptions ?? []) {
       const name = optionByHash.get(Buffer.from(hashBytes).toString("hex"));
       if (name) selectedOptions.push(name);
     }
@@ -1434,6 +1517,56 @@ function getParticipantForMessage(msg: WAMessage): string | undefined {
   }
 
   return msg.key.participant ?? undefined;
+}
+
+function uniqueStrings(values: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function ownJidCandidates(
+  socketUser: { id?: string; lid?: string; phoneNumber?: string } | undefined,
+  authUser: { id?: string; lid?: string; phoneNumber?: string } | undefined
+): string[] {
+  const raw = [
+    socketUser?.id,
+    socketUser?.lid,
+    socketUser?.phoneNumber,
+    authUser?.id,
+    authUser?.lid,
+    authUser?.phoneNumber,
+  ];
+  return uniqueStrings([
+    ...raw,
+    ...raw.map((jid) => (jid ? jidNormalizedUser(jid) : undefined)),
+  ]);
+}
+
+function authorCandidatesFromKey(key: WAMessageKey | null | undefined): string[] {
+  if (!key) {
+    return [];
+  }
+
+  const keyed = key as WAMessageKey & {
+    participantAlt?: string | null;
+    remoteJidAlt?: string | null;
+  };
+  const raw = [
+    keyed.participantAlt,
+    keyed.remoteJidAlt,
+    key.participant,
+    key.remoteJid,
+  ];
+  return uniqueStrings([
+    ...raw,
+    ...raw.map((jid) => (jid ? jidNormalizedUser(jid) : undefined)),
+  ]);
 }
 
 function isReactionAdded(text: string | null | undefined): boolean {
