@@ -149,7 +149,7 @@ After `thread.subscribe()`, all future messages in that thread are routed to `on
 
 ```ts
 bot.onSubscribedMessage(async (thread, message) => {
-  if (message.author.isMe) return; // ignore your own messages
+  if (message.author.isMe) return; // ignore messages sent by this adapter
 
   if (message.text === "!ping") {
     await thread.post("pong");
@@ -223,6 +223,7 @@ bot.onNewMention(async (thread, message) => {
 });
 
 bot.onSubscribedMessage(async (thread, message) => {
+  // Avoid echoing messages posted by this adapter.
   if (message.author.isMe) return;
   await thread.post(`Echo: ${message.text}`);
 });

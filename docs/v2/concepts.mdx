@@ -62,9 +62,15 @@ When Baileys delivers a `WAMessage`, the adapter converts it into a Chat SDK `Me
 | `message.attachments` | Populated for image, video, audio, and document messages |
 | `message.author.userId` | Sender's JID |
 | `message.author.userName` | `msg.pushName` (the sender's display name) |
-| `message.author.isMe` | `msg.key.fromMe` |
+| `message.author.isMe` | `true` only for messages sent by this adapter instance |
+| `message.author.isBot` | `true` only for messages sent by this adapter instance |
 | `message.metadata.dateSent` | `msg.messageTimestamp` converted to a `Date` |
 | `message.metadata.edited` | Detected from `editedMessage` or protocol message type 14 |
+| `message.metadata.fromMe` | `msg.key.fromMe`, the Baileys flag for messages from the paired WhatsApp account |
+
+<Callout type="info">
+  Baileys' `msg.key.fromMe` means "sent from the paired WhatsApp account." Chat SDK's `message.author.isMe` means "sent by this bot/adapter." In `chat-adapter-baileys`, personal-phone messages from the paired account keep `message.metadata.fromMe === true` but use `message.author.isMe === false`, so they still reach handlers like `onNewMessage`. Messages posted through the adapter are tracked by Baileys message ID and are marked `isMe`/`isBot` when WhatsApp echoes them back, letting Chat SDK's central self-filter avoid feedback loops.
+</Callout>
 
 Example: log full message info when the bot receives a mention:
 
@@ -75,6 +81,7 @@ bot.onNewMention(async (thread, message) => {
   console.log("Text:", message.text);
   console.log("Sent at:", message.metadata.dateSent);
   console.log("Is edited:", message.metadata.edited);
+  console.log("From paired WhatsApp account:", message.metadata.fromMe);
   console.log("Attachments:", message.attachments.length);
 });
 ```

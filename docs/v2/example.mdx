@@ -201,6 +201,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 // ---------------------------------------------------------------------------
 
 bot.onNewMessage(/.+/, async (thread, message) => {
+  // Avoid handling messages posted by this adapter.
   if (message.author.isMe) return;
   if (!thread.isDM) return; // Only handle DMs here; groups are handled above
 

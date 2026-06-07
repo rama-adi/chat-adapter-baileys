@@ -596,7 +596,8 @@ bot.onSubscribedMessage(async (thread, message) => {
   // Log which account received this
   console.log(`Message to ${wa.botUserId}: ${message.text}`);
   
-  // Filter out messages from yourself (though author.isMe is usually easier)
+  // Filter paired-account messages manually if your bot should ignore them too.
+  // `author.isMe` only filters messages actually posted by this adapter.
   if (message.author.userId === wa.botUserId) {
     return;
   }

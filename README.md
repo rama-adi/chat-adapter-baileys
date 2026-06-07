@@ -52,6 +52,7 @@ bot.onNewMention(async (thread, message) => {
 });
 
 bot.onSubscribedMessage(async (thread, message) => {
+  // Ignore messages posted by this adapter to avoid feedback loops.
   if (message.author.isMe) return;
   await thread.post(`You said: ${message.text}`);
 });

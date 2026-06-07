@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.1.0-beta.4 - 2026-06-07
+
+### Fixed
+
+- Split Baileys' paired-account `fromMe` flag from Chat SDK's bot-authored `author.isMe` semantics.
+- Preserve WhatsApp/Baileys `fromMe` as `message.metadata.fromMe` while only marking adapter-sent message echoes as `author.isMe` / `author.isBot`.
+- Track generated Baileys message IDs before sending so adapter-sent echoes are recognized reliably and Chat SDK can continue filtering self messages centrally.
+- Apply the same adapter-authored identity handling to reaction and poll-vote authors.
+
+### Documentation
+
+- Updated the v2 Concepts guide to document the `fromMe` / `author.isMe` distinction.
+- Clarified examples that `message.author.isMe` filters messages posted by this adapter, not every message sent from the paired phone.
+
 ##  2.1.0-beta.3 - 2026-06-02
 Mitigates the Baileys spoofing vulnerability reported in #5 by raising the Baileys dependency floor to >=7.0.0-rc13 <8.
 

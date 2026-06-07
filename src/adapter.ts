@@ -59,7 +59,10 @@ import type {
 } from "./types.js";
 
 const DEFAULT_POLL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const SENT_MESSAGE_TTL_MS = 5 * 60 * 1000;
 const POLL_INDEX_MAX_LENGTH = 1000;
+type SendMessageContent = Parameters<WASocket["sendMessage"]>[1];
+type SendMessageOptions = NonNullable<Parameters<WASocket["sendMessage"]>[2]>;
 
 interface StoredPollEntry {
   question: string;
@@ -95,6 +98,7 @@ export class BaileysAdapter
   /** Guard so we only request a pairing code once per socket lifetime. */
   private _pairingCodeRequested = false;
   private _pollVoteSubscriptions: PollVoteSubscription[] = [];
+  private _sentMessageIds = new Map<string, number>();
 
   constructor(config: BaileysAdapterConfig) {
     const adapterName = config.adapterName ?? "baileys";
@@ -266,7 +270,7 @@ export class BaileysAdapter
               raw: msg,
               rawEmoji: reaction.text ?? "",
               threadId,
-              user: buildReactionAuthor(msg, this._socket?.user?.id),
+              user: this._buildBaileysAuthor(msg),
             });
             continue;
           }
@@ -349,10 +353,11 @@ export class BaileysAdapter
   parseMessage(raw: WAMessage): Message<WAMessage> {
     const jid = raw.key.remoteJid ?? "";
     const isGroup = isJidGroup(jid);
-    const isMe = raw.key.fromMe ?? false;
+    const fromPairedAccount = raw.key.fromMe === true;
+    const isSentByAdapter = this._isSentByAdapter(raw.key);
     const content = getMessageContent(raw);
 
-    const senderId = isMe
+    const senderId = fromPairedAccount
       ? (this._socket?.user?.id ?? "unknown@s.whatsapp.net")
       : isGroup
         ? (raw.key.participant ?? jid)
@@ -360,6 +365,15 @@ export class BaileysAdapter
 
     const text = extractTextFromMessage(content);
     const threadId = this.encodeThreadId({ jid });
+    const metadata = {
+      dateSent: new Date(
+        (Number(raw.messageTimestamp ?? 0)) * 1000
+      ),
+      edited:
+        raw.message?.editedMessage != null ||
+        raw.message?.protocolMessage?.type === 14,
+      fromMe: fromPairedAccount,
+    };
 
     const attachments: Attachment[] = buildAttachments(raw, content, this._socket);
 
@@ -373,17 +387,10 @@ export class BaileysAdapter
         userId: senderId,
         userName: raw.pushName ?? senderId.split("@")[0],
         fullName: raw.pushName ?? "",
-        isBot: false,
-        isMe,
+        isBot: isSentByAdapter,
+        isMe: isSentByAdapter,
       } satisfies Author,
-      metadata: {
-        dateSent: new Date(
-          (Number(raw.messageTimestamp ?? 0)) * 1000
-        ),
-        edited:
-          raw.message?.editedMessage != null ||
-          raw.message?.protocolMessage?.type === 14,
-      },
+      metadata,
       attachments,
     });
   }
@@ -416,7 +423,7 @@ export class BaileysAdapter
     const media = await buildMediaPayloads(message);
 
     if (media.length === 0) {
-      const sent = await sendOne(socket, jid, { text }, options);
+      const sent = await this._sendOne(socket, jid, { text }, options);
       return this._toRawMessage(sent, threadId);
     }
 
@@ -434,7 +441,7 @@ export class BaileysAdapter
       // Only the first send carries the `quoted` reference, matching
       // WhatsApp's native behaviour where only one message in a batch quotes.
       const opts = i === 0 ? options : undefined;
-      const sent = await sendOne(socket, jid, payloads[i], opts);
+      const sent = await this._sendOne(socket, jid, payloads[i], opts);
       if (!first) first = sent ?? undefined;
     }
 
@@ -455,7 +462,7 @@ export class BaileysAdapter
       : this._converter.renderPostable(message);
 
     const key: WAMessageKey = { remoteJid: jid, id: messageId, fromMe: true };
-    const sent = await socket.sendMessage(jid, { edit: key, text });
+    const sent = await this._sendOne(socket, jid, { edit: key, text });
     return this._toRawMessage(sent, threadId);
   }
 
@@ -463,7 +470,7 @@ export class BaileysAdapter
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
     const key: WAMessageKey = { remoteJid: jid, id: messageId, fromMe: true };
-    await socket.sendMessage(jid, { delete: key });
+    await this._sendOne(socket, jid, { delete: key });
   }
 
   // ---------------------------------------------------------------------------
@@ -483,9 +490,9 @@ export class BaileysAdapter
       remoteJid: jid,
       id: messageId,
       fromMe: false,
-      participant,
+      ...(participant ? { participant } : {}),
     };
-    await socket.sendMessage(jid, { react: { text, key } });
+    await this._sendOne(socket, jid, { react: { text, key } });
   }
 
   async removeReaction(
@@ -500,10 +507,10 @@ export class BaileysAdapter
       remoteJid: jid,
       id: messageId,
       fromMe: false,
-      participant,
+      ...(participant ? { participant } : {}),
     };
     // Empty text removes the reaction
-    await socket.sendMessage(jid, { react: { text: "", key } });
+    await this._sendOne(socket, jid, { react: { text: "", key } });
   }
 
   // ---------------------------------------------------------------------------
@@ -851,7 +858,7 @@ export class BaileysAdapter
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
-    const sent = await socket.sendMessage(jid, {
+    const sent = await this._sendOne(socket, jid, {
       location: {
         degreesLatitude: resolved.latitude,
         degreesLongitude: resolved.longitude,
@@ -921,7 +928,7 @@ export class BaileysAdapter
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
-    const sent = await socket.sendMessage(jid, {
+    const sent = await this._sendOne(socket, jid, {
       poll: {
         name: resolved.question,
         values: resolved.options,
@@ -981,11 +988,70 @@ export class BaileysAdapter
     if (!sent) {
       throw new ValidationError("baileys", "sendMessage returned no message.");
     }
+    this._trackSentMessage(sent);
     return {
       id: sent.key.id ?? generateMessageIDV2(),
       raw: sent,
       threadId,
     };
+  }
+
+  private async _sendOne(
+    socket: WASocket,
+    jid: string,
+    payload: SendMessageContent | MediaPayload,
+    options?: SendMessageOptions
+  ): Promise<WAMessage | undefined> {
+    const messageId = options?.messageId ?? generateMessageIDV2(socket.user?.id);
+    const key: WAMessageKey = { remoteJid: jid, id: messageId, fromMe: true };
+    const cacheKey = getSentMessageCacheKey(key);
+    this._trackSentMessageKey(key);
+    try {
+      const sent = await sendOne(socket, jid, payload, { ...options, messageId });
+      this._trackSentMessage(sent);
+      return sent;
+    } catch (err) {
+      if (cacheKey) {
+        this._sentMessageIds.delete(cacheKey);
+      }
+      throw err;
+    }
+  }
+
+  private _buildBaileysAuthor(msg: WAMessage): Author {
+    return buildBaileysAuthor(
+      msg,
+      this._socket?.user?.id,
+      this._isSentByAdapter(msg.key)
+    );
+  }
+
+  private _trackSentMessage(sent: WAMessage | undefined): void {
+    this._trackSentMessageKey(sent?.key);
+  }
+
+  private _trackSentMessageKey(key: WAMessageKey | null | undefined): void {
+    const cacheKey = getSentMessageCacheKey(key);
+    if (!cacheKey) return;
+    this._pruneSentMessageIds();
+    this._sentMessageIds.set(cacheKey, Date.now() + SENT_MESSAGE_TTL_MS);
+  }
+
+  private _isSentByAdapter(key: WAMessageKey): boolean {
+    if (key.fromMe !== true) return false;
+    const cacheKey = getSentMessageCacheKey(key);
+    if (!cacheKey) return false;
+    this._pruneSentMessageIds();
+    return this._sentMessageIds.has(cacheKey);
+  }
+
+  private _pruneSentMessageIds(): void {
+    const now = Date.now();
+    for (const [id, expiresAt] of this._sentMessageIds) {
+      if (expiresAt <= now) {
+        this._sentMessageIds.delete(id);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1228,7 +1294,7 @@ export class BaileysAdapter
       if (name) selectedOptions.push(name);
     }
 
-    const author = buildReactionAuthor(msg, this._socket?.user?.id);
+    const author = this._buildBaileysAuthor(msg);
 
     const vote: BaileysPollVote = {
       threadId,
@@ -1374,14 +1440,15 @@ function isReactionAdded(text: string | null | undefined): boolean {
   return (text ?? "").length > 0;
 }
 
-function buildReactionAuthor(
+function buildBaileysAuthor(
   msg: WAMessage,
-  botUserId?: string
+  botUserId: string | undefined,
+  isSentByAdapter: boolean
 ): Author {
   const jid = msg.key.remoteJid ?? "";
   const isGroup = isJidGroup(jid);
-  const isMe = msg.key.fromMe ?? false;
-  const userId = isMe
+  const fromPairedAccount = msg.key.fromMe === true;
+  const userId = fromPairedAccount
     ? (botUserId ?? "unknown@s.whatsapp.net")
     : isGroup
       ? (msg.key.participant ?? jid)
@@ -1391,9 +1458,16 @@ function buildReactionAuthor(
     userId,
     userName: msg.pushName ?? userId.split("@")[0],
     fullName: msg.pushName ?? "",
-    isBot: false,
-    isMe,
+    isBot: isSentByAdapter,
+    isMe: isSentByAdapter,
   };
+}
+
+function getSentMessageCacheKey(
+  key: WAMessageKey | null | undefined
+): string | null {
+  if (!key?.id || !key.remoteJid) return null;
+  return `${key.remoteJid}:${key.id}`;
 }
 
 function assertValidLatitude(latitude: number): void {
@@ -1491,18 +1565,17 @@ function canCarryCaption(payload: MediaPayload): boolean {
 }
 
 /**
- * Call `socket.sendMessage` while omitting the options arg when not provided.
- * Keeps the call shape `(jid, payload)` in the common case so existing test
- * assertions (and Baileys' own argument handling) stay unchanged.
+ * Call `socket.sendMessage`, preserving the legacy two-argument shape only for
+ * callers that truly have no options.
  */
 async function sendOne(
   socket: WASocket,
   jid: string,
-  payload: MediaPayload,
-  options?: { quoted?: WAMessage }
+  payload: SendMessageContent | MediaPayload,
+  options?: SendMessageOptions
 ): Promise<WAMessage | undefined> {
-  const content = payload as Parameters<WASocket["sendMessage"]>[1];
-  if (options) {
+  const content = payload as SendMessageContent;
+  if (options && Object.keys(options).length > 0) {
     return socket.sendMessage(jid, content, options);
   }
   return socket.sendMessage(jid, content);
