@@ -1,10 +1,11 @@
-# Thread IDs And Multi-Account
-
+---
+title: "Thread IDs And Multi-Account"
+description: "How thread IDs identify WhatsApp chats and how to handle multiple accounts"
 ---
 
 ## What is a thread ID?
 
-Every conversation in the Chat SDK is identified by a **thread ID** — a stable string that uniquely identifies a chat across the lifetime of your bot. The adapter generates these IDs from WhatsApp JIDs (Jabber IDs), which are WhatsApp's internal identifiers for conversations.
+Every conversation in the Chat SDK is identified by a **thread ID**, a stable string that uniquely identifies a chat across the lifetime of your bot. The adapter generates these IDs from WhatsApp JIDs (Jabber IDs), which are WhatsApp's internal identifiers for conversations.
 
 Thread IDs are used throughout the Chat SDK for:
 
@@ -23,8 +24,8 @@ Thread IDs are used throughout the Chat SDK for:
 
 Where:
 
-- `<adapterName>` — the `adapterName` you passed to `createBaileysAdapter()`, defaulting to `"baileys"`.
-- `<base64url(jid)>` — the WhatsApp JID encoded as Base64URL (no padding, URL-safe characters).
+- `<adapterName>`: the `adapterName` you passed to `createBaileysAdapter()`, defaulting to `"baileys"`.
+- `<base64url(jid)>`: the WhatsApp JID encoded as Base64URL (no padding, URL-safe characters).
 
 ### Examples
 
@@ -57,9 +58,11 @@ When you run a single WhatsApp account, all thread IDs start with `"baileys:"` b
 
 When you run **multiple WhatsApp accounts** in one `Chat` instance, two different accounts could have a conversation with the same JID (e.g. both have a DM with `15551234567@s.whatsapp.net`). Without namespacing, those would produce identical thread IDs, causing:
 
+<Callout type="warn">
 - Message routing bugs (messages from one account trigger handlers meant for the other)
 - Subscription state shared across accounts (subscribing in account A accidentally subscribes account B)
 - Dedup keys colliding across accounts
+</Callout>
 
 By giving each adapter a unique `adapterName`, the thread IDs become:
 
@@ -75,9 +78,22 @@ These are treated as completely separate threads.
 ## Running multiple accounts
 
 Each account needs:
-1. Its own auth state directory (separate `useMultiFileAuthState` folder)
-2. A unique `adapterName` (no `":"` allowed in the name)
-3. Its own adapter instance
+
+<Steps>
+
+<Step>
+**Its own auth state directory**: a separate `useMultiFileAuthState` folder per account.
+</Step>
+
+<Step>
+**A unique `adapterName`** (no `":"` allowed in the name).
+</Step>
+
+<Step>
+**Its own adapter instance**: create one `createBaileysAdapter()` call per account.
+</Step>
+
+</Steps>
 
 ```ts
 import { useMultiFileAuthState } from "baileys";
@@ -91,7 +107,7 @@ const { state: stateSales, saveCreds: saveSales } = await useMultiFileAuthState(
 
 // Create an adapter for each account
 const waMain = createBaileysAdapter({
-  adapterName: "baileys-main",   // unique name — no ":" allowed
+  adapterName: "baileys-main",   // unique name, no ":" allowed
   auth: { state: stateMain, saveCreds: saveMain },
   userName: "main-bot",
   onQR: async (qr) => {
@@ -156,7 +172,9 @@ const storedThreadId = "baileys-main:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ";
 await bot.postTo(storedThreadId, "Reminder: your order has shipped!");
 ```
 
-Thread IDs are stable as long as `adapterName` doesn't change — so they're safe to store in a database.
+<Callout type="info">
+Thread IDs are stable as long as `adapterName` doesn't change, so they're safe to store in a database.
+</Callout>
 
 ---
 
@@ -178,6 +196,8 @@ await bot.postTo(threadId, "Hello! This is an automated message.");
 
 ## Constraints
 
-- `adapterName` must **not** contain `":"` — the adapter validates this at construction time and throws if you pass an invalid name.
+<Callout type="warn">
+- `adapterName` must **not** contain `":"` because the adapter validates this at construction time and throws if you pass an invalid name.
 - Thread IDs from one adapter cannot be used with another adapter, even if `adapterName` is changed later.
 - If you change `adapterName` on an existing deployment, all stored thread IDs become invalid.
+</Callout>

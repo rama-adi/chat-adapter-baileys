@@ -1,16 +1,19 @@
-# Error Handling and Validation
+---
+title: "Error Handling and Validation"
+description: "Errors you may hit with the Baileys WhatsApp adapter and how to handle them."
+---
 
 This guide explains the errors you might encounter when using the WhatsApp adapter and how to handle them gracefully.
 
-Related docs:
-
-- [Quickstart](./quickstart.md) — basic setup and first bot
-- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
-- [Events and Lifecycle](./events-and-lifecycle.md) — connection flow and WebSocket errors
-- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — thread ID validation and constraints
-- [Extensions](./extensions.md) — WhatsApp-specific methods with their validation rules
-- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
-- [Migrating from v1 to v2](../migration/v1-to-v2.md) — upgrade guide
+<Cards>
+  <Card title="Quickstart" href="/docs/chat-adapter-baileys/v2/quickstart">basic setup and first bot</Card>
+  <Card title="Concepts" href="/docs/chat-adapter-baileys/v2/concepts">how Chat SDK concepts map to WhatsApp</Card>
+  <Card title="Events and Lifecycle" href="/docs/chat-adapter-baileys/v2/events-and-lifecycle">connection flow and WebSocket errors</Card>
+  <Card title="Thread IDs and Multi-Account" href="/docs/chat-adapter-baileys/v2/thread-ids-and-multi-account">thread ID validation and constraints</Card>
+  <Card title="Extensions" href="/docs/chat-adapter-baileys/v2/extensions">WhatsApp-specific methods with their validation rules</Card>
+  <Card title="Formatting and Media" href="/docs/chat-adapter-baileys/v2/formatting-and-media">text formatting and file handling</Card>
+  <Card title="Migrating from v1 to v2" href="/docs/chat-adapter-baileys/v2/migration">upgrade guide</Card>
+</Cards>
 
 ---
 
@@ -58,7 +61,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 ```ts
 // This throws immediately
 const wa = createBaileysAdapter({
-  adapterName: "baileys:main",  // ❌ Invalid — contains ":"
+  adapterName: "baileys:main",  // ❌ Invalid, contains ":"
   auth: { state, saveCreds },
 });
 // ValidationError: Invalid adapterName "baileys:main". ":" is not allowed.
@@ -142,10 +145,10 @@ bot.onSubscribedMessage(async (thread, message) => {
 
 ### Reply message thread mismatch
 
-**When it happens:** The message's thread ID doesn't match its raw JID — usually indicates data corruption or manual thread ID construction.
+**When it happens:** The message's thread ID doesn't match its raw JID, which usually indicates data corruption or manual thread ID construction.
 
 ```ts
-// Rare — only happens with corrupted data
+// Rare: only happens with corrupted data
 wa.reply(corruptedMessage, "text");
 // ValidationError: reply: message threadId does not match the quoted message JID
 ```
@@ -192,7 +195,7 @@ function isValidLat(lat: number): boolean {
 |-------|---------------|
 | Empty question | `sendPoll: question must not be empty.` |
 | Too few options | `sendPoll: WhatsApp polls require between 2 and 12 options. Received 1.` |
-| Too many options | Same as above, when > 12 |
+| Too many options | Same as above, when \> 12 |
 | Empty option string | `sendPoll: poll options must not be empty.` |
 | Bad selectableCount | `sendPoll: selectableCount must be an integer >= 0. Received -1.` |
 
@@ -259,14 +262,16 @@ if (!thread.isDM) {
 
 ### Message has no remote JID
 
-**When it happens:** Extremely rare — the raw Baileys message is missing its JID field when calling `reply()`.
+**When it happens:** Extremely rare: the raw Baileys message is missing its JID field when calling `reply()`.
 
 ```ts
 wa.reply(incompleteMessage, "text");
 // ValidationError: reply: message has no remoteJid
 ```
 
-**Fix:** This indicates corrupted or synthetic message data. Ensure you're only replying to genuine incoming messages from handlers.
+<Callout type="warn">
+  This indicates corrupted or synthetic message data. Ensure you're only replying to genuine incoming messages from handlers.
+</Callout>
 
 ---
 
@@ -295,7 +300,7 @@ if (isBaileysAdapter(thread.adapter)) {
 
 ### Internal: sendMessage returned no message
 
-**When it happens:** Extremely rare — Baileys' `sendMessage()` returns undefined, usually due to a network or protocol failure.
+**When it happens:** Extremely rare: Baileys' `sendMessage()` returns undefined, usually due to a network or protocol failure.
 
 ```ts
 // Rare internal error
@@ -303,7 +308,9 @@ await wa.postMessage(threadId, "Hello");
 // ValidationError: sendMessage returned no message.
 ```
 
-**Fix:** This indicates a serious Baileys or network failure. Retry the operation or check your connection. If persistent, check Baileys logs for underlying issues.
+<Callout type="error">
+  This indicates a serious Baileys or network failure. Retry the operation or check your connection. If persistent, check Baileys logs for underlying issues.
+</Callout>
 
 ---
 
@@ -315,7 +322,7 @@ Baileys emits WebSocket errors that aren't `ValidationError` instances. These in
 
 | Situation | What happens | How to handle |
 |-----------|--------------|-------------|
-| **Connection dropped unexpectedly** | Baileys auto-reconnects automatically | No action needed — the adapter handles this |
+| **Connection dropped unexpectedly** | Baileys auto-reconnects automatically | No action needed; the adapter handles this |
 | **Logged out (status code 401)** | Session invalidated from WhatsApp app | Delete saved credentials and re-authenticate with a fresh QR scan |
 | **Network timeout** | Temporary connection loss | The adapter will retry with exponential backoff |
 | **Server restart (code 515)** | Expected during QR scan handshake | The adapter reconnects automatically to complete authentication |
@@ -334,13 +341,17 @@ function onLoggedOut() {
 }
 ```
 
-See [Events and Lifecycle](./events-and-lifecycle.md) for detailed reconnection behavior and how to monitor connection state.
+See [Events and Lifecycle](/docs/chat-adapter-baileys/v2/events-and-lifecycle) for detailed reconnection behavior and how to monitor connection state.
 
 ---
 
 ## Best practices for error handling
 
-### 1. Distinguish validation from unexpected errors
+<Steps>
+
+<Step>
+
+### Distinguish validation from unexpected errors
 
 ```ts
 bot.onSubscribedMessage(async (thread, message) => {
@@ -353,21 +364,25 @@ bot.onSubscribedMessage(async (thread, message) => {
     });
   } catch (err) {
     if (err instanceof ValidationError) {
-      // User input problem — tell them
+      // User input problem, tell them
       await thread.post(`Invalid input: ${err.message}`);
       return;
     }
     
-    // System problem — log and maybe alert
+    // System problem: log and maybe alert
     console.error("Unexpected error:", err);
     await thread.post("Something went wrong. Please try again.");
   }
 });
 ```
 
-### 2. Pre-validate user input
+</Step>
 
-Don't let validation errors reach the adapter — check first:
+<Step>
+
+### Pre-validate user input
+
+Don't let validation errors reach the adapter; check first:
 
 ```ts
 function validatePhoneNumber(num: string): boolean {
@@ -375,7 +390,11 @@ function validatePhoneNumber(num: string): boolean {
 }
 ```
 
-### 3. Handle missing attachments gracefully
+</Step>
+
+<Step>
+
+### Handle missing attachments gracefully
 
 Not an error, but worth checking:
 
@@ -386,7 +405,11 @@ if (!attachment.fetchData) {
 }
 ```
 
-### 4. Log validation errors for debugging
+</Step>
+
+<Step>
+
+### Log validation errors for debugging
 
 ```ts
 } catch (err) {
@@ -396,6 +419,10 @@ if (!attachment.fetchData) {
   }
 }
 ```
+
+</Step>
+
+</Steps>
 
 ---
 

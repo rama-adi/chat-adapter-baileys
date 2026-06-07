@@ -1,4 +1,7 @@
-# Formatting And Media
+---
+title: "Formatting And Media"
+description: "How the Baileys adapter converts text formatting and handles media with WhatsApp."
+---
 
 ---
 
@@ -25,10 +28,10 @@ WhatsApp uses its own lightweight markup syntax that differs from standard Markd
 When you pass a string to `thread.post()`, the Chat SDK treats it as plain text. To send formatted content, use the Chat SDK's rich-text helpers or markdown string:
 
 ```ts
-// Plain text — no formatting
+// Plain text, no formatting
 await thread.post("Hello world");
 
-// Markdown string — the adapter converts it to WhatsApp format before sending
+// Markdown string: the adapter converts it to WhatsApp format before sending
 await thread.post("*Bold* and _italic_ and ~strikethrough~");
 // Sent to WhatsApp as: *Bold* and _italic_ and ~strikethrough~
 
@@ -92,12 +95,26 @@ When someone sends an image, video, audio message, or file to a group or DM that
 
 ### Attachment fields
 
-| Field | Type | Description |
-|---|---|---|
-| `type` | `"image"` \| `"video"` \| `"audio"` \| `"file"` | Media category |
-| `mimeType` | `string` | MIME type (e.g. `"image/jpeg"`, `"video/mp4"`) |
-| `name` | `string` | File name (documents use the original filename; others use the type name) |
-| `fetchData()` | `() => Promise<Buffer>` | Downloads the binary content on demand |
+<TypeTable
+  type={{
+    type: {
+      description: "Media category",
+      type: '"image" | "video" | "audio" | "file"',
+    },
+    mimeType: {
+      description: 'MIME type (e.g. `"image/jpeg"`, `"video/mp4"`)',
+      type: "string",
+    },
+    name: {
+      description: "File name (documents use the original filename; others use the type name)",
+      type: "string",
+    },
+    "fetchData()": {
+      description: "Downloads the binary content on demand",
+      type: "() => Promise<Buffer>",
+    },
+  }}
+/>
 
 ### Checking for attachments
 
@@ -113,7 +130,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 
   // Describe each attachment without downloading
   const lines = message.attachments.map(
-    (a) => `• ${a.type} — ${a.mimeType} (${a.name})`
+    (a) => `• ${a.type}: ${a.mimeType} (${a.name})`
   );
   await thread.post(`Received ${message.attachments.length} file(s):\n${lines.join("\n")}`);
 });
@@ -121,7 +138,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 
 ### Downloading attachment data
 
-`fetchData()` downloads the binary content from WhatsApp's media servers. Downloads happen lazily — nothing is fetched until you call `fetchData()`. The result is a `Buffer`.
+`fetchData()` downloads the binary content from WhatsApp's media servers. Downloads happen lazily, so nothing is fetched until you call `fetchData()`. The result is a `Buffer`.
 
 ```ts
 import fs from "fs/promises";
@@ -162,7 +179,7 @@ bot.onSubscribedMessage(async (thread, message) => {
       }
       case "audio": {
         // e.g. pass to a speech-to-text service
-        await thread.post("Got a voice message — transcription coming...");
+        await thread.post("Got a voice message, transcription coming...");
         break;
       }
       case "file": {
@@ -174,4 +191,6 @@ bot.onSubscribedMessage(async (thread, message) => {
 });
 ```
 
-> **Note:** Media URLs on WhatsApp expire. Download attachment data promptly if you need it — don't store the `fetchData` reference and call it later after a long delay.
+<Callout type="warn">
+  Media URLs on WhatsApp expire. Download attachment data promptly if you need it; don't store the `fetchData` reference and call it later after a long delay.
+</Callout>

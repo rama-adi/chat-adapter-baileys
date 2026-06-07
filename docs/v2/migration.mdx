@@ -1,16 +1,19 @@
-# Migrating from v1 to v2
+---
+title: "Migrating from v1 to v2"
+description: "Upgrade chat-adapter-baileys from v1 to v2 with breaking changes and behavior updates."
+---
 
 This guide helps you upgrade from `chat-adapter-baileys` v1.x to v2.x. Version 2 keeps the adapter focused on normal WhatsApp behavior, removes the old out-of-band extension router, and tightens a few transport behaviors that were too loose for an unofficial API client.
 
-Related docs:
-
-- [Quickstart](../v2/quickstart.md) — setting up a new bot from scratch
-- [Concepts](../v2/concepts.md) — how Chat SDK concepts map to WhatsApp
-- [Events and Lifecycle](../v2/events-and-lifecycle.md) — connection flow and message handling
-- [Thread IDs and Multi-Account](../v2/thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
-- [Extensions](../v2/extensions.md) — how to use WhatsApp-specific methods in v2
-- [Formatting and Media](../v2/formatting-and-media.md) — text formatting and file handling
-- [Error Handling](../v2/error-handling.md) — validation errors and troubleshooting
+<Cards>
+  <Card title="Quickstart" href="/docs/chat-adapter-baileys/v2/quickstart">Setting up a new bot from scratch</Card>
+  <Card title="Concepts" href="/docs/chat-adapter-baileys/v2/concepts">How Chat SDK concepts map to WhatsApp</Card>
+  <Card title="Events and Lifecycle" href="/docs/chat-adapter-baileys/v2/events-and-lifecycle">Connection flow and message handling</Card>
+  <Card title="Thread IDs and Multi-Account" href="/docs/chat-adapter-baileys/v2/thread-ids-and-multi-account">Running multiple WhatsApp accounts</Card>
+  <Card title="Extensions" href="/docs/chat-adapter-baileys/v2/extensions">How to use WhatsApp-specific methods in v2</Card>
+  <Card title="Formatting and Media" href="/docs/chat-adapter-baileys/v2/formatting-and-media">Text formatting and file handling</Card>
+  <Card title="Error Handling" href="/docs/chat-adapter-baileys/v2/error-handling">Validation errors and troubleshooting</Card>
+</Cards>
 
 ---
 
@@ -39,13 +42,17 @@ Peer and dev dependencies were raised to the current Chat SDK line:
 
 ## Migration steps
 
-### 1. Update dependencies
+<Steps>
+
+<Step>
+
+### Update dependencies
 
 Update your `package.json` to require the newer versions:
 
 **Before (v1):**
 
-```json
+```json title="package.json"
 {
   "peerDependencies": {
     "chat": "^4.0.0"
@@ -59,7 +66,7 @@ Update your `package.json` to require the newer versions:
 
 **After (v2):**
 
-```json
+```json title="package.json"
 {
   "peerDependencies": {
     "chat": "^4.24.0"
@@ -75,7 +82,11 @@ Update your `package.json` to require the newer versions:
 }
 ```
 
-### 2. Replace extension router usage
+</Step>
+
+<Step>
+
+### Replace extension router usage
 
 In v1, you created a router object with `createBaileysExtensions(...)` and called methods on it:
 
@@ -130,11 +141,15 @@ bot.onSubscribedMessage(async (thread, message) => {
 });
 ```
 
-**Why this changed:**
-
+<Callout type="info">
 In v1, WhatsApp extensions lived in a separate router object outside the Chat SDK handler context. In v2, the extension surface stays on the concrete `BaileysAdapter`, and handlers reach it through `thread.adapter` narrowing. This is simpler, more type-safe, and works naturally in multi-account setups because each thread already carries the adapter that received the message.
+</Callout>
 
-### 3. Update multi-account patterns
+</Step>
+
+<Step>
+
+### Update multi-account patterns
 
 For per-thread operations, use the thread's adapter:
 
@@ -152,7 +167,11 @@ await Promise.all([
 ]);
 ```
 
-### 4. Update reaction handlers
+</Step>
+
+<Step>
+
+### Update reaction handlers
 
 Inbound WhatsApp reactions now trigger Chat SDK reaction handlers. Update any reaction handling code to use the current event fields:
 
@@ -163,15 +182,15 @@ bot.onReaction(["👍", "👎"], async (event) => {
 });
 ```
 
-Note the current Chat SDK event fields:
+<Callout type="warn">
+Do not use older example field names like `event.isAdded` or `event.author`. The current fields are `event.added` (boolean indicating if the reaction was added or removed), `event.user` (the user who reacted), and `event.messageId` (the message that was reacted to).
+</Callout>
 
-- `event.added` — boolean indicating if the reaction was added or removed
-- `event.user` — the user who reacted
-- `event.messageId` — the message that was reacted to
+</Step>
 
-Do not use older example field names like `event.isAdded` or `event.author`.
+<Step>
 
-### 5. Review stricter transport validation
+### Review stricter transport validation
 
 Version 2 is less permissive in a few places. Check your code for these patterns:
 
@@ -197,9 +216,15 @@ Version 2 is less permissive in a few places. Check your code for these patterns
   - Empty option strings
   - Negative or non-integer `selectableCount`
 
+<Callout type="info">
 As of `2.1.0-beta.2`, `markRead`, `sendLocation`, and `sendPoll` also accept a single named-arguments object. The original positional forms still work, but they are now deprecated and will be removed in the next major version.
+</Callout>
 
 If your v1 code relied on loose input handling, fix the caller rather than trying to preserve the old behavior.
+
+</Step>
+
+</Steps>
 
 ---
 

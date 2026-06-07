@@ -1,0 +1,136 @@
+---
+title: "Introduction (v1, archived)"
+description: "Archived v1 documentation for chat-adapter-baileys; use v2 for new projects."
+---
+
+<Callout type="warn">
+  This is the documentation for `chat-adapter-baileys` v1.x. These docs are archived and no longer updated. For new projects, use [v2](/docs/chat-adapter-baileys/v2).
+</Callout>
+
+**`chat-adapter-baileys`** is the WhatsApp (Baileys) adapter for the [Chat SDK](https://www.npmjs.com/package/chat).
+
+<Callout type="warn" title="Unofficial WhatsApp API">
+  This adapter uses Baileys, a third-party unofficial WhatsApp Web API. It is
+  not an official WhatsApp/Meta API and may break when WhatsApp changes internal
+  protocols. WhatsApp may also suspend or ban numbers/accounts that use
+  unofficial automation. Use at your own risk and evaluate compliance
+  requirements before production use.
+</Callout>
+
+...with that out of the way, let's continue with the docs.
+
+This package lets you run Chat SDK bots on WhatsApp via Baileys. It handles the
+WhatsApp WebSocket connection, message parsing, formatting, media attachments,
+reactions, and typing indicators, so you can focus on your bot logic.
+
+## Why use it?
+
+- **Write once, run anywhere:** your bot logic targets the platform-agnostic Chat SDK, so the same handlers work across every adapter. Add or swap platforms without rewriting.
+- **No official API required:** connect an ordinary WhatsApp account via QR or pairing code. No Meta Cloud API approval, business verification, or per-message fees.
+- **Batteries included:** the adapter manages the WebSocket connection, message parsing, formatting, media up/download, reactions, and typing indicators for you.
+- **Multi-account ready:** run several WhatsApp numbers from one bot, each isolated by a thread-ID prefix.
+- **WhatsApp-native extras:** quoted replies, read receipts, presence, location pins, polls, and group-participant lookups beyond the base Chat SDK interface.
+- **Resilient sessions:** credentials persist after first login (no re-scan), and the connection auto-reconnects on unexpected drops.
+
+## Beyond the official API
+
+Because it talks to WhatsApp Web directly, the adapter exposes capabilities that the official WhatsApp Cloud API restricts or doesn't offer:
+
+- **Free-form messaging:** message any chat without the 24-hour customer-service window or pre-approved message templates.
+- **Reactions:** add, remove, and observe emoji reactions.
+- **Read receipts:** send blue double-ticks on demand with `markRead(...)`.
+- **Presence control:** set the bot's global online/offline status and show typing indicators.
+- **Polls:** create native WhatsApp polls with `sendPoll(...)`.
+- **Location pins:** send native location messages with `sendLocation(...)`.
+- **Group insights:** list group participants and their admin roles with `fetchGroupParticipants(...)`.
+- **Quoted replies:** reply with the native WhatsApp reply bubble via `reply(...)`.
+
+See [Extensions](/docs/chat-adapter-baileys/v1/extensions) for the full list and usage examples.
+
+## Support Overview
+
+### Chat SDK Base
+
+| Feature | Support |
+|---|---|
+| Post message | ✅ |
+| Edit message | ✅ |
+| Delete message | ✅ |
+| Add reactions | ✅ |
+| Remove reactions | ✅ |
+| Observe reactions | ✅ |
+| Typing indicator | ✅ |
+| DMs | ✅ |
+| Fetch thread info | ✅ |
+| Fetch channel info | ✅ |
+| Post channel message | ✅ |
+| Fetch messages | ⚠️ Returns empty unless you persist your own history |
+| Fetch single message | ❌ |
+| Fetch channel messages | ⚠️ Returns empty unless you persist your own history |
+| List threads | ❌ |
+| Streaming | ❌ |
+| Scheduled messages | ❌ |
+| Slash commands | ❌ |
+| Modals | ❌ |
+| Ephemeral messages | ❌ |
+
+### Baileys Extras
+
+| Feature | Support |
+|---|---|
+| Quoted reply bubble | ✅ `reply(message, text)` |
+| Read receipts | ✅ `markRead(threadId, messageIds)` |
+| Global presence | ✅ `setPresence(...)` |
+| Location messages | ✅ `sendLocation(...)` |
+| Polls | ✅ `sendPoll(...)` |
+| Group participant lookup | ✅ `fetchGroupParticipants(...)` |
+
+## Quick Links
+
+<Cards>
+  <Card title="Quickstart" href="/docs/chat-adapter-baileys/v1/quickstart">Install, configure, and run your first WhatsApp bot</Card>
+  <Card title="Concepts" href="/docs/chat-adapter-baileys/v1/concepts">How Chat SDK concepts map to WhatsApp</Card>
+  <Card title="Events and Lifecycle" href="/docs/chat-adapter-baileys/v1/events-and-lifecycle">Connection flow, auth, and reconnection</Card>
+  <Card title="Thread IDs and Multi-Account" href="/docs/chat-adapter-baileys/v1/thread-ids-and-multi-account">Thread IDs and multiple accounts</Card>
+  <Card title="Formatting and Media" href="/docs/chat-adapter-baileys/v1/formatting-and-media">Text formatting and file handling</Card>
+  <Card title="Extensions" href="/docs/chat-adapter-baileys/v1/extensions">WhatsApp-specific features</Card>
+  <Card title="Runnable Example" href="/docs/chat-adapter-baileys/v1/example">Full working code</Card>
+</Cards>
+
+## v1 vs v2: Key Differences
+
+| Feature | v1 | v2 |
+|---------|-----|-----|
+| **Extension Router** | `createBaileysExtensions()` for multi-account routing | Removed; use `requireBaileysAdapter(thread)` instead |
+| **Dependency Versions** | `chat` `^4.0.0`, `@chat-adapter/*` `^4.0.0` | `chat` `^4.24.0`, `@chat-adapter/*` `^4.24.0` |
+| **Reply Method** | `wa.reply(message, text)` | Same, but validates `message.threadId` and auto-marks read |
+| **markRead** | `markRead(threadId, messageIds)` | Requires `participant` param for group messages |
+| **Validation** | Loose input handling | Stricter validation (coordinates, poll options, etc.) |
+| **Reactions** | Basic support | Full Chat SDK reaction event support |
+
+## Should You Upgrade to v2?
+
+**Stay on v1 if:**
+- Your bot is working well and you don't need new features
+- You rely on the `createBaileysExtensions()` router pattern
+- You don't want to update dependency versions
+
+**Upgrade to v2 if:**
+- You're starting a new project
+- You want cleaner multi-account patterns without a separate router
+- You need better reaction handling
+- You want stricter validation to catch bugs early
+
+## Migration Guide
+
+If you decide to upgrade, see the [v1 to v2 Migration Guide](/docs/chat-adapter-baileys/v2/migration) for:
+- Step-by-step upgrade instructions
+- Code examples (v1 → v2 side-by-side)
+- Breaking changes explained
+- Migration checklist
+
+## Status
+
+<Callout type="info">
+  v1 is in maintenance mode. Critical bug fixes may be backported, but new features will only be added to v2.
+</Callout>

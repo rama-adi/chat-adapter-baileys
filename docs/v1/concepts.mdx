@@ -1,4 +1,7 @@
-# Concepts Mapping
+---
+title: "Concepts Mapping"
+description: "Maps Chat SDK concepts like Thread, Channel, and Message to WhatsApp's model."
+---
 
 The Chat SDK uses a platform-agnostic model (`Thread`, `Channel`, `Message`, etc.) that adapters translate to and from each platform's native concepts. This page explains how those Chat SDK concepts map to WhatsApp's model when using this adapter.
 
@@ -6,10 +9,10 @@ The Chat SDK uses a platform-agnostic model (`Thread`, `Channel`, `Message`, etc
 
 ## Thread → WhatsApp conversation (JID)
 
-In the Chat SDK, a **thread** is a container for a sequence of messages — typically a chat room, DM, or topic thread. On WhatsApp there are only two kinds of conversations:
+In the Chat SDK, a **thread** is a container for a sequence of messages (typically a chat room, DM, or topic thread). On WhatsApp there are only two kinds of conversations:
 
-- **Direct message (DM)** — a one-on-one chat with another user. JID format: `15551234567@s.whatsapp.net`
-- **Group chat** — a group conversation with multiple participants. JID format: `123456789-1234567890@g.us`
+- **Direct message (DM):** a one-on-one chat with another user. JID format: `15551234567@s.whatsapp.net`
+- **Group chat:** a group conversation with multiple participants. JID format: `123456789-1234567890@g.us`
 
 Each WhatsApp JID maps 1-to-1 to a Chat SDK thread. There is no concept of sub-threads or topics inside a WhatsApp conversation, so a thread and its channel are always the same conversation.
 
@@ -25,13 +28,13 @@ bot.onSubscribedMessage(async (thread, message) => {
 
 ## Channel → same WhatsApp conversation
 
-The Chat SDK has a `Channel` abstraction for platforms that distinguish between a top-level channel and threads inside it (e.g. Slack channels with message threads). WhatsApp has no such distinction — every conversation is flat.
+The Chat SDK has a `Channel` abstraction for platforms that distinguish between a top-level channel and threads inside it (e.g. Slack channels with message threads). WhatsApp has no such distinction, so every conversation is flat.
 
 Because of this:
 
 - `channelIdFromThreadId()` returns the thread ID unchanged.
-- `postChannelMessage()` delegates to `postMessage()` — posting to the "channel" is the same as posting to the conversation.
-- `listThreads()` returns an empty array — there are no sub-threads to list.
+- `postChannelMessage()` delegates to `postMessage()`, because posting to the "channel" is the same as posting to the conversation.
+- `listThreads()` returns an empty array, as there are no sub-threads to list.
 
 In practice you won't call these methods directly; they're used by the Chat SDK internally.
 
@@ -53,7 +56,7 @@ When Baileys delivers a `WAMessage`, the adapter converts it into a Chat SDK `Me
 | `message.metadata.dateSent` | `msg.messageTimestamp` converted to a `Date` |
 | `message.metadata.edited` | Detected from `editedMessage` or protocol message type 14 |
 
-Example — log full message info when the bot receives a mention:
+Example: log full message info when the bot receives a mention:
 
 ```ts
 bot.onNewMention(async (thread, message) => {
@@ -72,8 +75,8 @@ bot.onNewMention(async (thread, message) => {
 
 WhatsApp supports emoji reactions on individual messages. The adapter maps the Chat SDK reaction methods to Baileys' `react` payload:
 
-- `message.addReaction("👍")` — sends a reaction with the given emoji to the message.
-- `message.removeReaction("👍")` — sends an empty-string reaction, which WhatsApp interprets as removing any existing reaction.
+- `message.addReaction("👍")`: sends a reaction with the given emoji to the message.
+- `message.removeReaction("👍")`: sends an empty-string reaction, which WhatsApp interprets as removing any existing reaction.
 
 ```ts
 bot.onSubscribedMessage(async (thread, message) => {
@@ -100,7 +103,7 @@ bot.onReaction(["👍", "👎"], async (event) => {
 
 ## Typing indicator
 
-`thread.startTyping()` sends WhatsApp's "composing" presence update, which shows the "typing..." indicator to other participants. This is a best-effort no-op — if the socket isn't connected when called, it silently does nothing.
+`thread.startTyping()` sends WhatsApp's "composing" presence update, which shows the "typing..." indicator to other participants. This is a best-effort no-op: if the socket isn't connected when called, it silently does nothing.
 
 ```ts
 bot.onNewMention(async (thread, message) => {
@@ -113,7 +116,9 @@ bot.onNewMention(async (thread, message) => {
 });
 ```
 
-> **Note:** WhatsApp presence updates are rate-limited. Sending them too frequently may be ignored by clients.
+<Callout type="info">
+  WhatsApp presence updates are rate-limited. Sending them too frequently may be ignored by clients.
+</Callout>
 
 ---
 
@@ -125,7 +130,7 @@ Baileys connects to WhatsApp by opening a **persistent outbound WebSocket** to W
 - `handleWebhook()` always returns HTTP `501 Not Implemented`.
 - Incoming messages arrive via the `messages.upsert` Baileys event, which the adapter subscribes to internally.
 
-If you have HTTP server code that routes to `adapter.handleWebhook()`, nothing will break — it just returns 501. To actually receive messages in gateway mode, call `await bot.initialize()` and then `adapter.connect()`.
+If you have HTTP server code that routes to `adapter.handleWebhook()`, nothing will break; it just returns 501. To actually receive messages in gateway mode, call `await bot.initialize()` and then `adapter.connect()`.
 
 ---
 

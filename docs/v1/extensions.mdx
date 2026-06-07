@@ -1,4 +1,7 @@
-# WhatsApp Extensions
+---
+title: "WhatsApp Extensions"
+description: "WhatsApp-specific BaileysAdapter methods for replies, polls, location, presence, and more"
+---
 
 The `BaileysAdapter` exposes several methods beyond the standard Chat SDK `Adapter` interface. These cover WhatsApp features that have no equivalent in the Chat SDK's platform-agnostic model.
 
@@ -10,7 +13,7 @@ Call these methods directly on the adapter instance rather than through `thread.
 
 The Chat SDK defines a common interface that works across Slack, Teams, Discord, WhatsApp, and so on. That interface only includes concepts that all platforms share: posting text, editing/deleting messages, reactions, and typing indicators.
 
-Features specific to one platform — like WhatsApp's quoted replies, polls, or location pins — can't be part of the shared interface. Rather than drop them entirely, this adapter exposes them as extra methods on `BaileysAdapter` directly.
+Features specific to one platform (like WhatsApp's quoted replies, polls, or location pins) can't be part of the shared interface. Rather than drop them entirely, this adapter exposes them as extra methods on `BaileysAdapter` directly.
 
 The tradeoff: extension calls are WhatsApp-specific. If you ever add a second adapter (e.g. Slack), you'll need to branch on the adapter type or handle those features separately.
 
@@ -40,11 +43,11 @@ If you pass a thread ID or message that doesn't match any registered adapter, `c
 
 ---
 
-## `reply(message, text)` — Quoted reply
+## `reply(message, text)`: Quoted reply
 
 Send a message that quotes a previous message, producing WhatsApp's native reply bubble (the grey quoted preview above the new message).
 
-`thread.post()` has no `replyTo` concept — use this method when the visual reply reference matters.
+`thread.post()` has no `replyTo` concept, so use this method when the visual reply reference matters.
 
 ```ts
 import { createBaileysAdapter } from "chat-adapter-baileys";
@@ -60,21 +63,22 @@ bot.onSubscribedMessage(async (thread, message) => {
 ```
 
 **Signature:**
+
 ```ts
 reply(message: Message<WAMessage>, text: string): Promise<RawMessage<WAMessage>>
 ```
 
-- `message` — the `Message` object from a handler; the raw `WAMessage` is used as the quoted context.
-- `text` — the reply text. WhatsApp formatting applies (`*bold*`, `_italic_`, etc.).
+- `message`: the `Message` object from a handler; the raw `WAMessage` is used as the quoted context.
+- `text`: the reply text. WhatsApp formatting applies (`*bold*`, `_italic_`, etc.).
 - Throws if the socket is not connected.
 
 ---
 
-## `markRead(threadId, messageIds)` — Read receipts
+## `markRead(threadId, messageIds)`: Read receipts
 
 Send read receipts for specific messages in a thread. WhatsApp shows blue double-ticks to the sender when this is called.
 
-The Chat SDK has no read-receipt concept — call this directly when you want to explicitly acknowledge that messages have been seen.
+The Chat SDK has no read-receipt concept; call this directly when you want to explicitly acknowledge that messages have been seen.
 
 ```ts
 bot.onSubscribedMessage(async (thread, message) => {
@@ -99,6 +103,7 @@ await whatsapp.markRead(thread.threadId, ids);
 ```
 
 **Signature:**
+
 ```ts
 markRead(
   threadId: string,
@@ -107,14 +112,14 @@ markRead(
 ): Promise<void>
 ```
 
-- `participant` — optional sender JID/LID for group messages. Not needed for DMs.
+- `participant`: optional sender JID/LID for group messages. Not needed for DMs.
 - Throws if the socket is not connected.
 
 ---
 
-## `setPresence(presence)` — Online/offline status
+## `setPresence(presence)`: Online/offline status
 
-Set the bot's global WhatsApp presence — whether it appears as online or offline to other users.
+Set the bot's global WhatsApp presence, controlling whether it appears as online or offline to other users.
 
 The Chat SDK's `thread.startTyping()` sends a per-chat "composing" indicator. This method controls the bot's top-level presence status, visible on the bot's profile.
 
@@ -129,6 +134,7 @@ await whatsapp.setPresence("unavailable");
 ```
 
 **Signature:**
+
 ```ts
 setPresence(presence: "available" | "unavailable"): Promise<void>
 ```
@@ -138,7 +144,7 @@ setPresence(presence: "available" | "unavailable"): Promise<void>
 
 ---
 
-## `sendLocation(threadId, latitude, longitude, options?)` — Location pin
+## `sendLocation(threadId, latitude, longitude, options?)`: Location pin
 
 Send a native WhatsApp location message (shown as an interactive map pin). The Chat SDK has no location type, so this is only available as an extension.
 
@@ -165,6 +171,7 @@ await whatsapp.sendLocation(thread.threadId, 51.5074, -0.1278);
 ```
 
 **Signature:**
+
 ```ts
 sendLocation(
   threadId: string,
@@ -174,14 +181,14 @@ sendLocation(
 ): Promise<RawMessage<WAMessage>>
 ```
 
-- `latitude` / `longitude` — decimal degrees (WGS 84).
-- `options.name` — optional place name shown on the pin.
-- `options.address` — optional address line shown below the name.
+- `latitude` / `longitude`: decimal degrees (WGS 84).
+- `options.name`: optional place name shown on the pin.
+- `options.address`: optional address line shown below the name.
 - Throws if the socket is not connected.
 
 ---
 
-## `sendPoll(threadId, question, options, selectableCount?)` — Poll
+## `sendPoll(threadId, question, options, selectableCount?)`: Poll
 
 Send a native WhatsApp poll. Polls let users tap options directly in the chat. The Chat SDK has no poll concept.
 
@@ -193,7 +200,7 @@ await whatsapp.sendPoll(
   ["Monday 10am", "Wednesday 2pm", "Friday 4pm"]
 );
 
-// Multi-choice poll — users can pick up to 2 options
+// Multi-choice poll, users can pick up to 2 options
 await whatsapp.sendPoll(
   thread.threadId,
   "Which topics should we cover?",
@@ -203,6 +210,7 @@ await whatsapp.sendPoll(
 ```
 
 **Signature:**
+
 ```ts
 sendPoll(
   threadId: string,
@@ -212,16 +220,18 @@ sendPoll(
 ): Promise<RawMessage<WAMessage>>
 ```
 
-- `question` — the poll question text.
-- `options` — 2–12 option strings.
-- `selectableCount` — how many options a user can select. `1` = single-choice, `>1` = multi-choice, `0` = unlimited.
+- `question`: the poll question text.
+- `options`: 2 to 12 option strings.
+- `selectableCount`: how many options a user can select. `1` = single-choice, `>1` = multi-choice, `0` = unlimited.
 - Throws if the socket is not connected.
 
-> **Note:** Poll vote events are not yet forwarded through the Chat SDK handler system. You can observe raw Baileys events via `socketOptions` if you need to tally votes.
+<Callout type="info">
+Poll vote events are not yet forwarded through the Chat SDK handler system. You can observe raw Baileys events via `socketOptions` if you need to tally votes.
+</Callout>
 
 ---
 
-## `fetchGroupParticipants(threadId)` — Group membership
+## `fetchGroupParticipants(threadId)`: Group membership
 
 Fetch the full participant list for a group thread, including admin roles. The Chat SDK has no group-membership concept.
 
@@ -259,6 +269,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 ```
 
 **Signature:**
+
 ```ts
 fetchGroupParticipants(threadId: string): Promise<BaileysGroupParticipant[]>
 ```
