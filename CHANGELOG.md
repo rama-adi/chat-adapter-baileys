@@ -1,5 +1,12 @@
 # Changelog
 
+##  2.1.0-beta.3 - 2026-06-02
+Mitigates the Baileys spoofing vulnerability reported in #5 by raising the Baileys dependency floor to >=7.0.0-rc13 <8.
+
+This pulls patched Baileys versions transitively while still allowing compatible newer Baileys 7 versions to be resolved by downstream installs.
+
+
+
 ## 2.1.0-beta.2 - 2026-04-22
 
 ### Added
