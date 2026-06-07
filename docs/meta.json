@@ -2,7 +2,7 @@
 	"title": "Chat Adapter for Baileys",
 	"description": "Build WhatsApp bots with the Chat SDK using the Baileys adapter.",
 	"git": {
-		"user": "ramaadi",
+		"user": "rama-adi",
 		"repo": "chat-adapter-baileys",
 		"branch": "main",
 		"path": "docs"
