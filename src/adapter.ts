@@ -11,6 +11,7 @@ import {
   type EmojiValue,
   type FetchOptions,
   type FetchResult,
+  type FileUpload,
   type FormattedContent,
   type ListThreadsOptions,
   type ListThreadsResult,
@@ -22,14 +23,18 @@ import {
 import {
   ValidationError,
   extractCard,
+  extractFiles,
   cardToFallbackText,
 } from "@chat-adapter/shared";
 import makeWASocket, {
   DisconnectReason,
+  decryptPollVote,
   extractMessageContent as extractBaileysMessageContent,
   fetchLatestBaileysVersion,
+  getKeyAuthor,
   isJidGroup,
   isJidNewsletter,
+  jidNormalizedUser,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
   downloadMediaMessage,
@@ -38,8 +43,44 @@ import makeWASocket, {
   type WAMessageKey,
   type WASocket,
 } from "baileys";
+import { createHash, randomBytes } from "node:crypto";
 import { BaileysFormatConverter } from "./format-converter.js";
-import type { BaileysAdapterConfig, BaileysGroupParticipant, BaileysThreadId } from "./types.js";
+import type {
+  BaileysAdapterConfig,
+  BaileysGroupParticipant,
+  BaileysMarkReadArgs,
+  BaileysPollVote,
+  BaileysPollVoteHandler,
+  BaileysSendLocationArgs,
+  BaileysSendPollArgs,
+  BaileysSendPollOptions,
+  BaileysThreadId,
+  BaileysTrackedPoll,
+} from "./types.js";
+
+const DEFAULT_POLL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const SENT_MESSAGE_TTL_MS = 5 * 60 * 1000;
+const POLL_INDEX_MAX_LENGTH = 1000;
+type SendMessageContent = Parameters<WASocket["sendMessage"]>[1];
+type SendMessageOptions = NonNullable<Parameters<WASocket["sendMessage"]>[2]>;
+
+interface StoredPollEntry {
+  question: string;
+  options: string[];
+  creatorJid: string;
+  /** base64-encoded message secret */
+  messageSecret: string;
+  /** Encoded thread ID where the poll was sent. May be undefined for entries written by older versions. */
+  threadId?: string;
+  /** Arbitrary caller-supplied metadata, round-tripped into every vote. */
+  metadata?: unknown;
+}
+
+interface PollVoteSubscription {
+  /** When set, only votes whose pollMessageId is in this set fire the handler. */
+  filter?: Set<string>;
+  handler: BaileysPollVoteHandler;
+}
 
 export class BaileysAdapter
   implements Adapter<BaileysThreadId, WAMessage>
@@ -56,6 +97,9 @@ export class BaileysAdapter
   private _shouldReconnect = true;
   /** Guard so we only request a pairing code once per socket lifetime. */
   private _pairingCodeRequested = false;
+  private _pairingCodeRequestTimer: ReturnType<typeof setTimeout> | null = null;
+  private _pollVoteSubscriptions: PollVoteSubscription[] = [];
+  private _sentMessageIds = new Map<string, number>();
 
   constructor(config: BaileysAdapterConfig) {
     const adapterName = config.adapterName ?? "baileys";
@@ -107,6 +151,7 @@ export class BaileysAdapter
   async disconnect(): Promise<void> {
     this._isConnected = false;
     this._shouldReconnect = false;
+    this._clearPairingCodeRequest();
     if (this._socket) {
       this._socket.end(undefined);
       this._socket = null;
@@ -134,6 +179,7 @@ export class BaileysAdapter
 
     this._socket = socket;
     this._pairingCodeRequested = false;
+    this._clearPairingCodeRequest();
 
     socket.ev.process(async (events) => {
       // ── credentials updated ─────────────────────────────────────────────────
@@ -150,22 +196,18 @@ export class BaileysAdapter
           await this._config.onQR(qr);
         }
 
-        // Pairing code — request once when the socket starts connecting
+        // Pairing code — request once only for fresh, unregistered credentials.
+        // Baileys may emit "connecting" before its WebSocket transport can
+        // accept IQ nodes, so defer the actual request briefly.
         if (
           this._config.phoneNumber &&
           this._config.onPairingCode &&
+          !state.creds.registered &&
           !this._pairingCodeRequested &&
+          !this._pairingCodeRequestTimer &&
           (connection === "connecting" || qr)
         ) {
-          this._pairingCodeRequested = true;
-          try {
-            const code = await socket.requestPairingCode(
-              this._config.phoneNumber
-            );
-            this._config.onPairingCode(code);
-          } catch (err) {
-            this._logger.error("Failed to request pairing code", err);
-          }
+          this._schedulePairingCodeRequest(socket);
         }
 
         if (connection === "open") {
@@ -175,6 +217,7 @@ export class BaileysAdapter
 
         if (connection === "close") {
           this._isConnected = false;
+          this._clearPairingCodeRequest();
           const statusCode = (
             lastDisconnect?.error as { output?: { statusCode?: number } }
           )?.output?.statusCode;
@@ -215,6 +258,7 @@ export class BaileysAdapter
 
           const content = getMessageContent(msg);
           const reaction = content?.reactionMessage;
+          const pollUpdate = content?.pollUpdateMessage;
           const threadId = this.encodeThreadId({ jid });
 
           if (reaction && this._chat) {
@@ -226,8 +270,13 @@ export class BaileysAdapter
               raw: msg,
               rawEmoji: reaction.text ?? "",
               threadId,
-              user: buildReactionAuthor(msg, this._socket?.user?.id),
+              user: this._buildBaileysAuthor(msg),
             });
+            continue;
+          }
+
+          if (pollUpdate && this._chat) {
+            await this._handlePollUpdate(msg, pollUpdate, threadId);
             continue;
           }
 
@@ -304,10 +353,11 @@ export class BaileysAdapter
   parseMessage(raw: WAMessage): Message<WAMessage> {
     const jid = raw.key.remoteJid ?? "";
     const isGroup = isJidGroup(jid);
-    const isMe = raw.key.fromMe ?? false;
+    const fromPairedAccount = raw.key.fromMe === true;
+    const isSentByAdapter = this._isSentByAdapter(raw.key);
     const content = getMessageContent(raw);
 
-    const senderId = isMe
+    const senderId = fromPairedAccount
       ? (this._socket?.user?.id ?? "unknown@s.whatsapp.net")
       : isGroup
         ? (raw.key.participant ?? jid)
@@ -315,6 +365,15 @@ export class BaileysAdapter
 
     const text = extractTextFromMessage(content);
     const threadId = this.encodeThreadId({ jid });
+    const metadata = {
+      dateSent: new Date(
+        (Number(raw.messageTimestamp ?? 0)) * 1000
+      ),
+      edited:
+        raw.message?.editedMessage != null ||
+        raw.message?.protocolMessage?.type === 14,
+      fromMe: fromPairedAccount,
+    };
 
     const attachments: Attachment[] = buildAttachments(raw, content, this._socket);
 
@@ -328,17 +387,10 @@ export class BaileysAdapter
         userId: senderId,
         userName: raw.pushName ?? senderId.split("@")[0],
         fullName: raw.pushName ?? "",
-        isBot: false,
-        isMe,
+        isBot: isSentByAdapter,
+        isMe: isSentByAdapter,
       } satisfies Author,
-      metadata: {
-        dateSent: new Date(
-          (Number(raw.messageTimestamp ?? 0)) * 1000
-        ),
-        edited:
-          raw.message?.editedMessage != null ||
-          raw.message?.protocolMessage?.type === 14,
-      },
+      metadata,
       attachments,
     });
   }
@@ -352,6 +404,15 @@ export class BaileysAdapter
     message: AdapterPostableMessage
   ): Promise<RawMessage<WAMessage>> {
     const { jid } = this.decodeThreadId(threadId);
+    return this._sendPostable(jid, message, threadId);
+  }
+
+  private async _sendPostable(
+    jid: string,
+    message: AdapterPostableMessage,
+    threadId: string,
+    options?: { quoted?: WAMessage }
+  ): Promise<RawMessage<WAMessage>> {
     const socket = this._requireSocket();
 
     const card = extractCard(message);
@@ -359,8 +420,32 @@ export class BaileysAdapter
       ? cardToFallbackText(card)
       : this._converter.renderPostable(message);
 
-    const sent = await socket.sendMessage(jid, { text });
-    return this._toRawMessage(sent, threadId);
+    const media = await buildMediaPayloads(message);
+
+    if (media.length === 0) {
+      const sent = await this._sendOne(socket, jid, { text }, options);
+      return this._toRawMessage(sent, threadId);
+    }
+
+    const captionIdx = text.length > 0 ? media.findIndex(canCarryCaption) : -1;
+    const payloads: MediaPayload[] = [];
+    if (text.length > 0 && captionIdx === -1) {
+      payloads.push({ text });
+    }
+    media.forEach((m, i) => {
+      payloads.push(i === captionIdx ? { ...m, caption: text } : m);
+    });
+
+    let first: WAMessage | undefined;
+    for (let i = 0; i < payloads.length; i++) {
+      // Only the first send carries the `quoted` reference, matching
+      // WhatsApp's native behaviour where only one message in a batch quotes.
+      const opts = i === 0 ? options : undefined;
+      const sent = await this._sendOne(socket, jid, payloads[i], opts);
+      if (!first) first = sent ?? undefined;
+    }
+
+    return this._toRawMessage(first, threadId);
   }
 
   async editMessage(
@@ -377,7 +462,7 @@ export class BaileysAdapter
       : this._converter.renderPostable(message);
 
     const key: WAMessageKey = { remoteJid: jid, id: messageId, fromMe: true };
-    const sent = await socket.sendMessage(jid, { edit: key, text });
+    const sent = await this._sendOne(socket, jid, { edit: key, text });
     return this._toRawMessage(sent, threadId);
   }
 
@@ -385,7 +470,7 @@ export class BaileysAdapter
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
     const key: WAMessageKey = { remoteJid: jid, id: messageId, fromMe: true };
-    await socket.sendMessage(jid, { delete: key });
+    await this._sendOne(socket, jid, { delete: key });
   }
 
   // ---------------------------------------------------------------------------
@@ -405,9 +490,9 @@ export class BaileysAdapter
       remoteJid: jid,
       id: messageId,
       fromMe: false,
-      participant,
+      ...(participant ? { participant } : {}),
     };
-    await socket.sendMessage(jid, { react: { text, key } });
+    await this._sendOne(socket, jid, { react: { text, key } });
   }
 
   async removeReaction(
@@ -422,10 +507,10 @@ export class BaileysAdapter
       remoteJid: jid,
       id: messageId,
       fromMe: false,
-      participant,
+      ...(participant ? { participant } : {}),
     };
     // Empty text removes the reaction
-    await socket.sendMessage(jid, { react: { text: "", key } });
+    await this._sendOne(socket, jid, { react: { text: "", key } });
   }
 
   // ---------------------------------------------------------------------------
@@ -585,6 +670,38 @@ export class BaileysAdapter
     return this._socket;
   }
 
+  private _schedulePairingCodeRequest(socket: WASocket): void {
+    this._pairingCodeRequestTimer = setTimeout(() => {
+      this._pairingCodeRequestTimer = null;
+
+      if (
+        this._socket !== socket ||
+        this._config.auth.state.creds.registered ||
+        this._pairingCodeRequested ||
+        !this._config.phoneNumber ||
+        !this._config.onPairingCode
+      ) {
+        return;
+      }
+
+      this._pairingCodeRequested = true;
+      void socket
+        .requestPairingCode(this._config.phoneNumber)
+        .then((code) => this._config.onPairingCode?.(code))
+        .catch((err) => {
+          this._pairingCodeRequested = false;
+          this._logger.error("Failed to request pairing code", err);
+        });
+    }, 3000);
+  }
+
+  private _clearPairingCodeRequest(): void {
+    if (this._pairingCodeRequestTimer) {
+      clearTimeout(this._pairingCodeRequestTimer);
+      this._pairingCodeRequestTimer = null;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // WhatsApp extensions (not part of the Chat SDK Adapter interface)
   // ---------------------------------------------------------------------------
@@ -595,16 +712,26 @@ export class BaileysAdapter
    * The Chat SDK's `thread.post()` has no concept of quoting a specific message.
    * Use this method directly on the adapter when you need the visual reply reference.
    *
+   * Accepts either a plain string or any `AdapterPostableMessage` shape,
+   * including ones with `attachments` / `files`. When attachments are present,
+   * only the first outgoing message carries the quoted reference — matching
+   * WhatsApp's native behaviour.
+   *
    * @example
    * ```typescript
-   * bot.onSubscribedMessage(async (thread, message) => {
-   *   await whatsapp.reply(message, "Got it!");
+   * // text-only reply
+   * await whatsapp.reply(message, "Got it!");
+   *
+   * // reply with an image + caption, all quoting the original
+   * await whatsapp.reply(message, {
+   *   raw: "Here's the screenshot you asked for",
+   *   files: [{ data: buffer, filename: "shot.png", mimeType: "image/png" }],
    * });
    * ```
    */
   async reply(
     message: Message<WAMessage>,
-    text: string
+    content: AdapterPostableMessage
   ): Promise<RawMessage<WAMessage>> {
     // Validate that the message belongs to this adapter instance.
     // This catches accidental cross-account calls in multi-account setups
@@ -628,8 +755,6 @@ export class BaileysAdapter
       );
     }
 
-    const socket = this._requireSocket();
-
     // In practice, quoted replies are more reliable when the inbound message
     // has been acknowledged first, especially for unofficial clients.
     if (!raw.key.fromMe && raw.key.id) {
@@ -640,8 +765,9 @@ export class BaileysAdapter
       );
     }
 
-    const sent = await socket.sendMessage(jid, { text }, { quoted: raw });
-    return this._toRawMessage(sent, this.encodeThreadId({ jid }));
+    return this._sendPostable(jid, content, this.encodeThreadId({ jid }), {
+      quoted: raw,
+    });
   }
 
   /**
@@ -653,30 +779,47 @@ export class BaileysAdapter
    * @example
    * ```typescript
    * bot.onSubscribedMessage(async (thread, message) => {
-   *   await whatsapp.markRead(
-   *     thread.threadId,
-   *     [message.id],
-   *     thread.isDM ? undefined : message.author.userId
-   *   );
+   *   await whatsapp.markRead({
+   *     threadId: thread.id,
+   *     messageIds: [message.id],
+   *     participant: thread.isDM ? undefined : message.author.userId,
+   *   });
    * });
    * ```
+  */
+  async markRead(args: BaileysMarkReadArgs): Promise<void>;
+  /**
+   * @deprecated Use `markRead({ threadId, messageIds, participant })` instead.
+   * Positional arguments will be removed in the next major version.
    */
   async markRead(
     threadId: string,
     messageIds: string[],
     participant?: string
+  ): Promise<void>;
+  async markRead(
+    threadIdOrArgs: string | BaileysMarkReadArgs,
+    messageIds?: string[],
+    participant?: string
   ): Promise<void> {
-    if (messageIds.length === 0) {
+    const resolved = normalizeMarkReadArgs(
+      threadIdOrArgs,
+      messageIds,
+      participant
+    );
+    const { threadId } = resolved;
+
+    if (resolved.messageIds.length === 0) {
       return;
     }
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
-    const keys = messageIds.map((id) => ({
+    const keys = resolved.messageIds.map((id) => ({
       remoteJid: jid,
       id,
       fromMe: false,
-      participant,
+      participant: resolved.participant,
     }));
     await socket.readMessages(keys);
   }
@@ -689,12 +832,19 @@ export class BaileysAdapter
    *
    * @example
    * ```typescript
+   * // Call this after the WhatsApp connection is open.
    * await whatsapp.setPresence("available");   // appears online
    * await whatsapp.setPresence("unavailable"); // appears offline
    * ```
    */
   async setPresence(presence: "available" | "unavailable"): Promise<void> {
-    const socket = this._requireSocket();
+    const socket = this._socket;
+    if (!socket || !this._isConnected) {
+      throw new ValidationError(
+        "baileys",
+        "Socket not connected. Call adapter.connect() and wait for WhatsApp to open first."
+      );
+    }
     await socket.sendPresenceUpdate(presence);
   }
 
@@ -706,29 +856,53 @@ export class BaileysAdapter
    *
    * @example
    * ```typescript
-   * await whatsapp.sendLocation(thread.threadId, 37.7749, -122.4194, {
+   * await whatsapp.sendLocation({
+   *   threadId: thread.id,
+   *   latitude: 37.7749,
+   *   longitude: -122.4194,
    *   name: "San Francisco",
    *   address: "San Francisco, CA, USA",
    * });
    * ```
    */
   async sendLocation(
+    args: BaileysSendLocationArgs
+  ): Promise<RawMessage<WAMessage>>;
+  /**
+   * @deprecated Use `sendLocation({ threadId, latitude, longitude, name, address })` instead.
+   * Positional arguments will be removed in the next major version.
+   */
+  async sendLocation(
     threadId: string,
     latitude: number,
     longitude: number,
     options?: { name?: string; address?: string }
+  ): Promise<RawMessage<WAMessage>>;
+  async sendLocation(
+    threadIdOrArgs: string | BaileysSendLocationArgs,
+    latitude?: number,
+    longitude?: number,
+    options?: { name?: string; address?: string }
   ): Promise<RawMessage<WAMessage>> {
-    assertValidLatitude(latitude);
-    assertValidLongitude(longitude);
+    const resolved = normalizeSendLocationArgs(
+      threadIdOrArgs,
+      latitude,
+      longitude,
+      options
+    );
+    const { threadId } = resolved;
+
+    assertValidLatitude(resolved.latitude);
+    assertValidLongitude(resolved.longitude);
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
-    const sent = await socket.sendMessage(jid, {
+    const sent = await this._sendOne(socket, jid, {
       location: {
-        degreesLatitude: latitude,
-        degreesLongitude: longitude,
-        name: options?.name,
-        address: options?.address,
+        degreesLatitude: resolved.latitude,
+        degreesLongitude: resolved.longitude,
+        name: resolved.name,
+        address: resolved.address,
       },
     });
     return this._toRawMessage(sent, threadId);
@@ -742,26 +916,76 @@ export class BaileysAdapter
    *
    * @example
    * ```typescript
-   * await whatsapp.sendPoll(thread.threadId, "What time works for the call?", [
-   *   "10:00 AM",
-   *   "2:00 PM",
-   *   "5:00 PM",
-   * ]);
+   * await whatsapp.sendPoll({
+   *   threadId: thread.id,
+   *   question: "What time works for the call?",
+   *   options: ["10:00 AM", "2:00 PM", "5:00 PM"],
+   * });
+   *
+   * // With arbitrary metadata round-tripped to onPollVote:
+   * await whatsapp.sendPoll({
+   *   threadId: thread.id,
+   *   question: "Lunch?",
+   *   options: ["A", "B"],
+   *   metadata: { askedBy: userId },
+   * });
    * ```
+   */
+  async sendPoll(args: BaileysSendPollArgs): Promise<RawMessage<WAMessage>>;
+  /**
+   * @deprecated Use `sendPoll({ threadId, question, options, selectableCount, metadata })` instead.
+   * Positional arguments will be removed in the next major version.
    */
   async sendPoll(
     threadId: string,
     question: string,
     options: string[],
-    selectableCount = 1
+    selectableCount?: number,
+    sendOptions?: BaileysSendPollOptions
+  ): Promise<RawMessage<WAMessage>>;
+  async sendPoll(
+    threadIdOrArgs: string | BaileysSendPollArgs,
+    question?: string,
+    options?: string[],
+    selectableCount = 1,
+    sendOptions?: BaileysSendPollOptions
   ): Promise<RawMessage<WAMessage>> {
-    assertValidPoll(question, options, selectableCount);
+    const resolved = normalizeSendPollArgs(
+      threadIdOrArgs,
+      question,
+      options,
+      selectableCount,
+      sendOptions
+    );
+    const { threadId } = resolved;
+
+    assertValidPoll(
+      resolved.question,
+      resolved.options,
+      resolved.selectableCount
+    );
 
     const { jid } = this.decodeThreadId(threadId);
     const socket = this._requireSocket();
-    const sent = await socket.sendMessage(jid, {
-      poll: { name: question, values: options, selectableCount },
+    const messageSecret = randomBytes(32);
+    const sent = await this._sendOne(socket, jid, {
+      poll: {
+        name: resolved.question,
+        values: resolved.options,
+        selectableCount: resolved.selectableCount,
+        messageSecret,
+      },
     });
+
+    await this._rememberPoll(
+      sent,
+      threadId,
+      resolved.question,
+      resolved.options,
+      resolved.metadata,
+      messageSecret
+    );
+
     return this._toRawMessage(sent, threadId);
   }
 
@@ -775,7 +999,7 @@ export class BaileysAdapter
    *
    * @example
    * ```typescript
-   * const participants = await whatsapp.fetchGroupParticipants(thread.threadId);
+   * const participants = await whatsapp.fetchGroupParticipants(thread.id);
    * const admins = participants.filter(p => p.isAdmin);
    * await thread.post(`Admins: ${admins.map(p => p.userId).join(", ")}`);
    * ```
@@ -806,11 +1030,394 @@ export class BaileysAdapter
     if (!sent) {
       throw new ValidationError("baileys", "sendMessage returned no message.");
     }
+    this._trackSentMessage(sent);
     return {
       id: sent.key.id ?? generateMessageIDV2(),
       raw: sent,
       threadId,
     };
+  }
+
+  private async _sendOne(
+    socket: WASocket,
+    jid: string,
+    payload: SendMessageContent | MediaPayload,
+    options?: SendMessageOptions
+  ): Promise<WAMessage | undefined> {
+    const messageId = options?.messageId ?? generateMessageIDV2(socket.user?.id);
+    const key: WAMessageKey = { remoteJid: jid, id: messageId, fromMe: true };
+    const cacheKey = getSentMessageCacheKey(key);
+    this._trackSentMessageKey(key);
+    try {
+      const sent = await sendOne(socket, jid, payload, { ...options, messageId });
+      this._trackSentMessage(sent);
+      return sent;
+    } catch (err) {
+      if (cacheKey) {
+        this._sentMessageIds.delete(cacheKey);
+      }
+      throw err;
+    }
+  }
+
+  private _buildBaileysAuthor(msg: WAMessage): Author {
+    return buildBaileysAuthor(
+      msg,
+      this._socket?.user?.id,
+      this._isSentByAdapter(msg.key)
+    );
+  }
+
+  private _trackSentMessage(sent: WAMessage | undefined): void {
+    this._trackSentMessageKey(sent?.key);
+  }
+
+  private _trackSentMessageKey(key: WAMessageKey | null | undefined): void {
+    const cacheKey = getSentMessageCacheKey(key);
+    if (!cacheKey) return;
+    this._pruneSentMessageIds();
+    this._sentMessageIds.set(cacheKey, Date.now() + SENT_MESSAGE_TTL_MS);
+  }
+
+  private _isSentByAdapter(key: WAMessageKey): boolean {
+    if (key.fromMe !== true) return false;
+    const cacheKey = getSentMessageCacheKey(key);
+    if (!cacheKey) return false;
+    this._pruneSentMessageIds();
+    return this._sentMessageIds.has(cacheKey);
+  }
+
+  private _pruneSentMessageIds(): void {
+    const now = Date.now();
+    for (const [id, expiresAt] of this._sentMessageIds) {
+      if (expiresAt <= now) {
+        this._sentMessageIds.delete(id);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Poll vote handling
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register a handler for decrypted poll votes.
+   *
+   * WhatsApp poll votes arrive as `pollUpdateMessage` events and are E2E
+   * encrypted. The adapter automatically decrypts votes for polls the bot
+   * sent via {@link BaileysAdapter.sendPoll} (the poll's `messageSecret` is
+   * persisted via the SDK's `StateAdapter`) and dispatches them here.
+   *
+   * Decrypted votes are also forwarded to `chat.processMessage` with the
+   * selected option names joined as the message text — so handlers like
+   * `chat.onSubscribedMessage` still see them. Use this method when you need
+   * the structured payload (poll question, voter, selected option names).
+   *
+   * Mirrors the Chat SDK's filtered-handler shape (`onReaction(emoji, fn)`,
+   * `onAction(actionIds, fn)`).
+   *
+   * @example
+   * ```ts
+   * // All votes on any poll the bot has sent.
+   * wa.onPollVote((vote) => {
+   *   console.log(`${vote.voter.userName}: ${vote.selectedOptions.join(", ")}`);
+   * });
+   *
+   * // Votes scoped to a single poll.
+   * const poll = await wa.sendPoll({
+   *   threadId: thread.id,
+   *   question: "Lunch?",
+   *   options: ["A", "B"],
+   * });
+   * wa.onPollVote(poll.id, async (vote) => {
+   *   await thread.post(`${vote.voter.userName} picked ${vote.selectedOptions[0]}`);
+   * });
+   *
+   * // Votes scoped to several polls.
+   * wa.onPollVote([pollA.id, pollB.id], handler);
+   * ```
+   *
+   * Multiple handlers can be registered; all matching handlers run in
+   * registration order. An empty `selectedOptions` array means the voter
+   * cleared their vote.
+   */
+  onPollVote(handler: BaileysPollVoteHandler): void;
+  onPollVote(
+    pollMessageIds: string | string[],
+    handler: BaileysPollVoteHandler
+  ): void;
+  onPollVote(
+    arg1: string | string[] | BaileysPollVoteHandler,
+    arg2?: BaileysPollVoteHandler
+  ): void {
+    if (typeof arg1 === "function") {
+      this._pollVoteSubscriptions.push({ handler: arg1 });
+      return;
+    }
+    if (!arg2) {
+      throw new ValidationError(
+        "baileys",
+        "onPollVote: handler is required when filtering by poll message id."
+      );
+    }
+    const ids = Array.isArray(arg1) ? arg1 : [arg1];
+    this._pollVoteSubscriptions.push({
+      filter: new Set(ids),
+      handler: arg2,
+    });
+  }
+
+  /**
+   * List polls the adapter is currently tracking — i.e. polls previously sent
+   * via {@link BaileysAdapter.sendPoll} whose decryption metadata still lives
+   * in the SDK's `StateAdapter`.
+   *
+   * Use this on startup to re-register per-poll handlers after a process
+   * restart (in-memory `onPollVote(pollId, handler)` registrations don't
+   * survive restarts, but the stored metadata does).
+   *
+   * Stale index entries (entries whose poll TTL has expired or were cleared
+   * via {@link BaileysAdapter.forgetPoll}) are filtered out — the returned
+   * list only contains polls that can actually decrypt incoming votes.
+   *
+   * @example
+   * ```ts
+   * const tracked = await wa.listTrackedPolls();
+   * for (const poll of tracked) {
+   *   wa.onPollVote(poll.pollMessageId, (vote) => {
+   *     console.log(`vote on "${poll.question}":`, vote.selectedOptions);
+   *   });
+   * }
+   * ```
+   */
+  async listTrackedPolls(): Promise<BaileysTrackedPoll[]> {
+    if (!this._chat) return [];
+    const state = this._chat.getState();
+    const ids = await state.getList<string>(this._pollIndexKey());
+    if (ids.length === 0) return [];
+
+    const seen = new Set<string>();
+    const tracked: BaileysTrackedPoll[] = [];
+
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+
+      const entry = await state.get<StoredPollEntry>(this._pollKey(id));
+      if (!entry) continue;
+
+      tracked.push({
+        pollMessageId: id,
+        threadId: entry.threadId ?? "",
+        question: entry.question,
+        options: entry.options,
+        metadata: entry.metadata,
+      });
+    }
+
+    return tracked;
+  }
+
+  /**
+   * Forget a tracked poll — deletes its decryption metadata from the
+   * `StateAdapter`. Subsequent votes on this poll won't be decrypted.
+   *
+   * Useful once a poll has closed and you no longer want to receive votes
+   * on it (e.g. the deadline passed). The index entry is left in place but
+   * filtered out by {@link BaileysAdapter.listTrackedPolls}.
+   */
+  async forgetPoll(pollMessageId: string): Promise<void> {
+    if (!this._chat) return;
+    await this._chat.getState().delete(this._pollKey(pollMessageId));
+  }
+
+  private _pollKey(pollMessageId: string): string {
+    return `baileys:${this.name}:poll:${pollMessageId}`;
+  }
+
+  private _pollIndexKey(): string {
+    return `baileys:${this.name}:poll-index`;
+  }
+
+  private async _rememberPoll(
+    sent: WAMessage | undefined,
+    threadId: string,
+    question: string,
+    options: string[],
+    metadata: unknown,
+    generatedMessageSecret?: Uint8Array
+  ): Promise<void> {
+    const id = sent?.key?.id;
+    if (!this._chat || !id) {
+      return;
+    }
+
+    const secret = generatedMessageSecret ?? (
+      sent?.message as { messageContextInfo?: { messageSecret?: Uint8Array } } | undefined
+    )?.messageContextInfo?.messageSecret;
+
+    if (!secret) {
+      this._logger.warn(
+        "sendPoll: no messageSecret on sent poll — incoming votes won't be decryptable."
+      );
+      return;
+    }
+
+    const creatorJid = jidNormalizedUser(this._socket?.user?.id ?? "");
+    const entry: StoredPollEntry = {
+      question,
+      options,
+      creatorJid,
+      messageSecret: Buffer.from(secret).toString("base64"),
+      threadId,
+      ...(metadata !== undefined ? { metadata } : {}),
+    };
+
+    const ttl = this._config.pollTtlMs ?? DEFAULT_POLL_TTL_MS;
+    const ttlOpt = ttl > 0 ? ttl : undefined;
+    const state = this._chat.getState();
+    await state.set(this._pollKey(id), entry, ttlOpt);
+    await state.appendToList(this._pollIndexKey(), id, {
+      maxLength: POLL_INDEX_MAX_LENGTH,
+      ttlMs: ttlOpt,
+    });
+  }
+
+  private async _handlePollUpdate(
+    msg: WAMessage,
+    update: NonNullable<NonNullable<WAMessage["message"]>["pollUpdateMessage"]>,
+    threadId: string
+  ): Promise<void> {
+    const pollMessageId = update.pollCreationMessageKey?.id;
+    if (!pollMessageId || !this._chat) {
+      return;
+    }
+
+    const stored = await this._chat
+      .getState()
+      .get<StoredPollEntry>(this._pollKey(pollMessageId));
+
+    if (!stored) {
+      this._logger.warn(
+        `pollUpdateMessage: no stored poll for id=${pollMessageId} — ` +
+          "the bot may have restarted with a non-persistent state adapter, " +
+          "or the poll was sent by a different bot instance."
+      );
+      return;
+    }
+
+    const ownJids = ownJidCandidates(
+      this._socket?.user,
+      this._config.auth.state.creds.me
+    );
+    const messageSecret = new Uint8Array(
+      Buffer.from(stored.messageSecret, "base64")
+    );
+
+    let voteMsg: { selectedOptions?: Uint8Array[] | null } | undefined;
+    let decryptError: unknown;
+    const pollCreatorJids = uniqueStrings([
+      ...ownJids.map((jid) => getKeyAuthor(update.pollCreationMessageKey, jid)),
+      ...authorCandidatesFromKey(update.pollCreationMessageKey),
+      stored.creatorJid,
+      ...ownJids,
+    ]);
+    const voterJids = uniqueStrings([
+      ...ownJids.map((jid) => getKeyAuthor(msg.key, jid)),
+      ...ownJids,
+      ...authorCandidatesFromKey(msg.key),
+    ]);
+
+    decrypt: {
+      for (const pollCreatorJid of pollCreatorJids) {
+        for (const voterJid of voterJids) {
+          try {
+            voteMsg = decryptPollVote(update.vote ?? {}, {
+              pollEncKey: messageSecret,
+              pollMsgId: pollMessageId,
+              pollCreatorJid,
+              voterJid,
+            });
+            break decrypt;
+          } catch (err) {
+            decryptError = err;
+          }
+        }
+      }
+    }
+
+    if (!voteMsg) {
+      this._logger.error("Failed to decrypt poll vote", {
+        error: decryptError,
+        pollMessageId,
+        pollCreationKey: update.pollCreationMessageKey,
+        voteKey: msg.key,
+        pollCreatorJids,
+        voterJids,
+        ownJids,
+      });
+      return;
+    }
+
+    /*
+     * `voteMsg` is assigned only by the labeled decrypt loop above. Keep this
+     * alias so TypeScript can follow the control flow without widening later.
+     */
+    const decryptedVote = voteMsg;
+
+    const optionByHash = new Map<string, string>();
+    for (const option of stored.options) {
+      const hash = createHash("sha256").update(option).digest("hex");
+      optionByHash.set(hash, option);
+    }
+
+    const selectedOptions: string[] = [];
+    for (const hashBytes of decryptedVote.selectedOptions ?? []) {
+      const name = optionByHash.get(Buffer.from(hashBytes).toString("hex"));
+      if (name) selectedOptions.push(name);
+    }
+
+    const author = this._buildBaileysAuthor(msg);
+
+    const vote: BaileysPollVote = {
+      threadId,
+      pollMessageId,
+      question: stored.question,
+      options: stored.options,
+      selectedOptions,
+      voter: author,
+      raw: msg,
+      metadata: stored.metadata,
+    };
+
+    for (const sub of this._pollVoteSubscriptions) {
+      if (sub.filter && !sub.filter.has(pollMessageId)) continue;
+      try {
+        await sub.handler(vote);
+      } catch (err) {
+        this._logger.error("onPollVote handler threw", err);
+      }
+    }
+
+    const text = selectedOptions.join(", ");
+    const formatted = this._converter.toAst(text);
+    const messageId = msg.key.id ?? generateMessageIDV2();
+
+    this._chat.processMessage(this, threadId, async () =>
+      new Message<WAMessage>({
+        id: messageId,
+        threadId,
+        text,
+        formatted,
+        raw: msg,
+        author,
+        metadata: {
+          dateSent: new Date(Number(msg.messageTimestamp ?? 0) * 1000),
+          edited: false,
+        },
+        attachments: [],
+      })
+    );
   }
 }
 
@@ -912,18 +1519,69 @@ function getParticipantForMessage(msg: WAMessage): string | undefined {
   return msg.key.participant ?? undefined;
 }
 
+function uniqueStrings(values: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function ownJidCandidates(
+  socketUser: { id?: string; lid?: string; phoneNumber?: string } | undefined,
+  authUser: { id?: string; lid?: string; phoneNumber?: string } | undefined
+): string[] {
+  const raw = [
+    socketUser?.id,
+    socketUser?.lid,
+    socketUser?.phoneNumber,
+    authUser?.id,
+    authUser?.lid,
+    authUser?.phoneNumber,
+  ];
+  return uniqueStrings([
+    ...raw,
+    ...raw.map((jid) => (jid ? jidNormalizedUser(jid) : undefined)),
+  ]);
+}
+
+function authorCandidatesFromKey(key: WAMessageKey | null | undefined): string[] {
+  if (!key) {
+    return [];
+  }
+
+  const keyed = key as WAMessageKey & {
+    participantAlt?: string | null;
+    remoteJidAlt?: string | null;
+  };
+  const raw = [
+    keyed.participantAlt,
+    keyed.remoteJidAlt,
+    key.participant,
+    key.remoteJid,
+  ];
+  return uniqueStrings([
+    ...raw,
+    ...raw.map((jid) => (jid ? jidNormalizedUser(jid) : undefined)),
+  ]);
+}
+
 function isReactionAdded(text: string | null | undefined): boolean {
   return (text ?? "").length > 0;
 }
 
-function buildReactionAuthor(
+function buildBaileysAuthor(
   msg: WAMessage,
-  botUserId?: string
+  botUserId: string | undefined,
+  isSentByAdapter: boolean
 ): Author {
   const jid = msg.key.remoteJid ?? "";
   const isGroup = isJidGroup(jid);
-  const isMe = msg.key.fromMe ?? false;
-  const userId = isMe
+  const fromPairedAccount = msg.key.fromMe === true;
+  const userId = fromPairedAccount
     ? (botUserId ?? "unknown@s.whatsapp.net")
     : isGroup
       ? (msg.key.participant ?? jid)
@@ -933,9 +1591,16 @@ function buildReactionAuthor(
     userId,
     userName: msg.pushName ?? userId.split("@")[0],
     fullName: msg.pushName ?? "",
-    isBot: false,
-    isMe,
+    isBot: isSentByAdapter,
+    isMe: isSentByAdapter,
   };
+}
+
+function getSentMessageCacheKey(
+  key: WAMessageKey | null | undefined
+): string | null {
+  if (!key?.id || !key.remoteJid) return null;
+  return `${key.remoteJid}:${key.id}`;
 }
 
 function assertValidLatitude(latitude: number): void {
@@ -954,6 +1619,187 @@ function assertValidLongitude(longitude: number): void {
       `sendLocation: longitude must be between -180 and 180. Received ${longitude}.`
     );
   }
+}
+
+function normalizeMarkReadArgs(
+  threadIdOrArgs: string | BaileysMarkReadArgs,
+  messageIds?: string[],
+  participant?: string
+): BaileysMarkReadArgs {
+  if (typeof threadIdOrArgs === "string") {
+    return {
+      threadId: threadIdOrArgs,
+      messageIds: messageIds ?? [],
+      participant,
+    };
+  }
+  return threadIdOrArgs;
+}
+
+function normalizeSendLocationArgs(
+  threadIdOrArgs: string | BaileysSendLocationArgs,
+  latitude?: number,
+  longitude?: number,
+  options?: { name?: string; address?: string }
+): BaileysSendLocationArgs {
+  if (typeof threadIdOrArgs === "string") {
+    return {
+      threadId: threadIdOrArgs,
+      latitude: latitude as number,
+      longitude: longitude as number,
+      name: options?.name,
+      address: options?.address,
+    };
+  }
+  return threadIdOrArgs;
+}
+
+function normalizeSendPollArgs(
+  threadIdOrArgs: string | BaileysSendPollArgs,
+  question?: string,
+  options?: string[],
+  selectableCount = 1,
+  sendOptions?: BaileysSendPollOptions
+): Required<Pick<BaileysSendPollArgs, "threadId" | "question" | "options" | "selectableCount">> &
+  Pick<BaileysSendPollArgs, "metadata"> {
+  if (typeof threadIdOrArgs === "string") {
+    return {
+      threadId: threadIdOrArgs,
+      question: question as string,
+      options: options as string[],
+      selectableCount,
+      metadata: sendOptions?.metadata,
+    };
+  }
+  return {
+    threadId: threadIdOrArgs.threadId,
+    question: threadIdOrArgs.question,
+    options: threadIdOrArgs.options,
+    selectableCount: threadIdOrArgs.selectableCount ?? 1,
+    metadata: threadIdOrArgs.metadata,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Media payload helpers
+// ---------------------------------------------------------------------------
+
+type MediaSource = Buffer | { url: string };
+
+type MediaPayload =
+  | { text: string }
+  | { image: MediaSource; mimetype?: string; caption?: string }
+  | { video: MediaSource; mimetype?: string; caption?: string }
+  | { audio: MediaSource; mimetype?: string; ptt?: boolean }
+  | { document: MediaSource; mimetype?: string; fileName?: string; caption?: string };
+
+function canCarryCaption(payload: MediaPayload): boolean {
+  return "image" in payload || "video" in payload || "document" in payload;
+}
+
+/**
+ * Call `socket.sendMessage`, preserving the legacy two-argument shape only for
+ * callers that truly have no options.
+ */
+async function sendOne(
+  socket: WASocket,
+  jid: string,
+  payload: SendMessageContent | MediaPayload,
+  options?: SendMessageOptions
+): Promise<WAMessage | undefined> {
+  const content = payload as SendMessageContent;
+  if (options && Object.keys(options).length > 0) {
+    return socket.sendMessage(jid, content, options);
+  }
+  return socket.sendMessage(jid, content);
+}
+
+function extractAttachments(message: AdapterPostableMessage): Attachment[] {
+  if (typeof message === "string") return [];
+  if ("attachments" in message && Array.isArray(message.attachments)) {
+    return message.attachments;
+  }
+  return [];
+}
+
+async function buildMediaPayloads(
+  message: AdapterPostableMessage
+): Promise<MediaPayload[]> {
+  const attachments = extractAttachments(message);
+  const files = extractFiles(message);
+
+  const payloads: MediaPayload[] = [];
+  for (const att of attachments) {
+    payloads.push(await attachmentToMedia(att));
+  }
+  for (const file of files) {
+    payloads.push(await fileToMedia(file));
+  }
+  return payloads;
+}
+
+async function attachmentToMedia(att: Attachment): Promise<MediaPayload> {
+  const source = await resolveAttachmentSource(att);
+  switch (att.type) {
+    case "image":
+      return { image: source, mimetype: att.mimeType };
+    case "video":
+      return { video: source, mimetype: att.mimeType };
+    case "audio":
+      return { audio: source, mimetype: att.mimeType ?? "audio/ogg" };
+    case "file":
+    default:
+      return {
+        document: source,
+        mimetype: att.mimeType ?? "application/octet-stream",
+        fileName: att.name ?? "document",
+      };
+  }
+}
+
+async function fileToMedia(file: FileUpload): Promise<MediaPayload> {
+  const buffer = await fileDataToBuffer(file.data);
+  const mime = file.mimeType ?? "application/octet-stream";
+  if (mime.startsWith("image/")) {
+    return { image: buffer, mimetype: mime };
+  }
+  if (mime.startsWith("video/")) {
+    return { video: buffer, mimetype: mime };
+  }
+  if (mime.startsWith("audio/")) {
+    return { audio: buffer, mimetype: mime };
+  }
+  return { document: buffer, mimetype: mime, fileName: file.filename };
+}
+
+async function resolveAttachmentSource(att: Attachment): Promise<MediaSource> {
+  if (att.data) {
+    return fileDataToBuffer(att.data);
+  }
+  if (att.fetchData) {
+    return await att.fetchData();
+  }
+  if (att.url) {
+    return { url: att.url };
+  }
+  throw new ValidationError(
+    "baileys",
+    "attachment has no data, fetchData, or url to send"
+  );
+}
+
+async function fileDataToBuffer(
+  data: Buffer | Blob | ArrayBuffer
+): Promise<Buffer> {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (typeof (data as Blob).arrayBuffer === "function") {
+    return Buffer.from(await (data as Blob).arrayBuffer());
+  }
+  throw new ValidationError(
+    "baileys",
+    "unsupported file data type — expected Buffer, ArrayBuffer, or Blob"
+  );
 }
 
 function assertValidPoll(

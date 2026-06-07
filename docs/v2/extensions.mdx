@@ -1,0 +1,612 @@
+---
+title: "WhatsApp Extensions"
+description: "BaileysAdapter methods for WhatsApp replies, polls, locations, and read receipts"
+---
+
+The `BaileysAdapter` exposes several methods beyond the standard Chat SDK `Adapter` interface. These cover WhatsApp features that have no equivalent in the Chat SDK's platform-agnostic model.
+
+<Cards>
+  <Card title="Quickstart" href="/docs/chat-adapter-baileys/v2/quickstart">Getting started with a basic bot</Card>
+  <Card title="Concepts" href="/docs/chat-adapter-baileys/v2/concepts">How Chat SDK concepts map to WhatsApp</Card>
+  <Card title="Events and Lifecycle" href="/docs/chat-adapter-baileys/v2/events-and-lifecycle">Connection flow and message handling</Card>
+  <Card title="Thread IDs and Multi-Account" href="/docs/chat-adapter-baileys/v2/thread-ids-and-multi-account">Working with multiple accounts</Card>
+  <Card title="Formatting and Media" href="/docs/chat-adapter-baileys/v2/formatting-and-media">Text formatting and file handling</Card>
+  <Card title="Error Handling" href="/docs/chat-adapter-baileys/v2/error-handling">Validation errors and troubleshooting</Card>
+  <Card title="Migrating from v1 to v2" href="/docs/chat-adapter-baileys/v2/migration">Upgrade guide</Card>
+</Cards>
+
+In `v2`, the clean way to access these methods from Chat SDK handlers is through `thread.adapter` plus one of the exported helpers:
+
+- `isBaileysAdapter(adapter)`: branch on platform with full type narrowing
+- `requireBaileysAdapter(thread)`: assert that the current context is WhatsApp and get the concrete adapter
+
+For multi-argument extension methods, `2.1.0` adds named-argument overloads. The old positional calls still work for now, but they are deprecated and will be removed in the next major version. The object form is now the recommended style because it scales better as method signatures grow.
+
+---
+
+## Why extensions exist
+
+The Chat SDK defines a common interface that works across Slack, Teams, Discord, WhatsApp, and so on. That interface only includes concepts that all platforms share: posting text, editing/deleting messages, reactions, and typing indicators.
+
+Features specific to one platform (like WhatsApp's quoted replies, polls, or location pins) can't be part of the shared interface. Rather than drop them entirely, this adapter exposes them as extra methods on `BaileysAdapter` directly.
+
+The tradeoff: extension calls are WhatsApp-specific. If you ever add a second adapter (e.g. Slack), branch explicitly on the adapter type or fall back to generic Chat SDK behavior.
+
+## Recommended patterns
+
+Branch by platform:
+
+```ts
+import { isBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const adapter = thread.adapter;
+
+  if (isBaileysAdapter(adapter)) {
+    await adapter.markRead({
+      threadId: thread.id,
+      messageIds: [message.id],
+      participant: thread.isDM ? undefined : message.author.userId,
+    });
+    return;
+  }
+
+  await thread.post("Read receipts are not supported on this platform.");
+});
+```
+
+Require WhatsApp for the current handler:
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const wa = requireBaileysAdapter(thread);
+  await wa.reply(message, "Got it!");
+});
+```
+
+Multi-account works naturally with these helpers because each `thread` already carries the concrete adapter that received the message. For account-wide actions like presence, keep references to your adapter instances directly:
+
+```ts
+await Promise.all([
+  waMain.setPresence("available"),
+  waSales.setPresence("available"),
+]);
+```
+
+---
+
+## `reply(message, content)`: Quoted reply
+
+Send a message that quotes a previous message, producing WhatsApp's native reply bubble (the grey quoted preview above the new message).
+
+`thread.post()` has no `replyTo` concept; use this method when the visual reply reference matters.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.author.isMe) return;
+
+  const wa = requireBaileysAdapter(thread);
+
+  // Shows the user's message in a grey bubble above "Got it!"
+  await wa.reply(message, "Got it!");
+});
+```
+
+### Replying with attachments
+
+`content` accepts either a plain string or any [`AdapterPostableMessage`](/docs/chat-adapter-baileys/v2/formatting-and-media#sending-attachments) shape, so you can reply with an image, document, audio, or video alongside caption text:
+
+```ts
+await wa.reply(message, {
+  raw: "Here's the chart you asked for",
+  files: [{ data: chartPng, filename: "chart.png", mimeType: "image/png" }],
+});
+```
+
+When the reply includes multiple outgoing items (e.g. one image + one PDF), only the first one carries the quote reference, matching how WhatsApp quotes natively when you send a batch. Caption placement and audio handling follow the same rules as `thread.post()` (see [Sending attachments](/docs/chat-adapter-baileys/v2/formatting-and-media#sending-attachments)).
+
+**Signature:**
+```ts
+reply(
+  message: Message<WAMessage>,
+  content: string | AdapterPostableMessage
+): Promise<RawMessage<WAMessage>>
+```
+
+- `message`: the `Message` object from a handler; the raw `WAMessage` is used as the quoted context.
+- `content`: either a text string, or a postable object with `raw` / `markdown` / `ast` / `card` plus optional `attachments` and `files`. WhatsApp formatting applies to text (`*bold*`, `_italic_`, etc.).
+- Returns the `RawMessage` of the **first** outgoing message (the one carrying the quote).
+- Throws if the socket is not connected.
+
+<Callout type="info">
+**Multi-account guard:** `reply()` validates that the message belongs to the same adapter instance. In multi-account setups, this prevents accidentally calling `waMain.reply()` with a message that arrived on `waSales`. Use `requireBaileysAdapter(thread)` to always get the correct adapter.
+</Callout>
+
+---
+
+## `markRead({ threadId, messageIds, participant? })`: Read receipts
+
+Send read receipts for specific messages in a thread. WhatsApp shows blue double-ticks to the sender when this is called.
+
+The Chat SDK has no read-receipt concept, so call this directly when you want to explicitly acknowledge that messages have been seen.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.author.isMe) return;
+
+  const wa = requireBaileysAdapter(thread);
+
+  // Mark this message as read immediately on receipt
+  await wa.markRead({
+    threadId: thread.id,
+    messageIds: [message.id],
+    participant: thread.isDM ? undefined : message.author.userId,
+  });
+
+  await thread.post("Processing your request...");
+});
+```
+
+You can batch multiple message IDs in one call:
+
+```ts
+const ids = messages.map(m => m.id);
+await requireBaileysAdapter(thread).markRead({
+  threadId: thread.id,
+  messageIds: ids,
+});
+```
+
+**Signature:**
+```ts
+markRead(args: {
+  threadId: string;
+  messageIds: string[];
+  participant?: string;
+}): Promise<void>
+
+markRead(
+  threadId: string,
+  messageIds: string[],
+  participant?: string
+): Promise<void>
+```
+
+- The object form is recommended.
+- The positional form is deprecated and will be removed in the next major version.
+- `participant`: optional sender JID/LID for group messages. Not needed for DMs.
+- Throws if the socket is not connected.
+
+---
+
+## `setPresence(presence)`: Online/offline status
+
+Set the bot's global WhatsApp presence, controlling whether it appears as online or offline to other users.
+
+The Chat SDK's `thread.startTyping()` sends a per-chat "composing" indicator. This method controls the bot's top-level presence status, visible on the bot's profile.
+
+```ts
+// After the WhatsApp socket is open, mark the bot as online.
+// In app code, do this from your connection-open hook or from a command
+// after the bot is already receiving messages.
+await whatsapp.setPresence("available");
+
+// Mark the bot as offline during maintenance
+await whatsapp.setPresence("unavailable");
+```
+
+**Signature:**
+```ts
+setPresence(presence: "available" | "unavailable"): Promise<void>
+```
+
+- Throws if the socket is not connected and open yet.
+- Per-chat "composing" presence is handled separately by `thread.startTyping()`.
+
+---
+
+## `sendLocation({ threadId, latitude, longitude, ... })`: Location pin
+
+Send a native WhatsApp location message (shown as an interactive map pin). The Chat SDK has no location type, so this is only available as an extension.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.text.toLowerCase().includes("office")) {
+    await requireBaileysAdapter(thread).sendLocation({
+      threadId: thread.id,
+      latitude: 37.7749,
+      longitude: -122.4194,
+      name: "HQ Office",
+      address: "1 Market St, San Francisco, CA",
+    });
+  }
+});
+```
+
+Without a name/address, a bare coordinate pin is sent:
+
+```ts
+await requireBaileysAdapter(thread).sendLocation({
+  threadId: thread.id,
+  latitude: 51.5074,
+  longitude: -0.1278,
+});
+```
+
+**Signature:**
+```ts
+sendLocation(args: {
+  threadId: string;
+  latitude: number;
+  longitude: number;
+  name?: string;
+  address?: string;
+}): Promise<RawMessage<WAMessage>>
+
+sendLocation(
+  threadId: string,
+  latitude: number,
+  longitude: number,
+  options?: { name?: string; address?: string }
+): Promise<RawMessage<WAMessage>>
+```
+
+- The object form is recommended.
+- The positional form is deprecated and will be removed in the next major version.
+- `latitude` / `longitude`: decimal degrees (WGS 84).
+- `name` / `address`: optional label fields for the object form. In the positional form, pass these as `options.name` / `options.address`.
+- Throws if the socket is not connected.
+
+---
+
+## `sendPoll({ threadId, question, options, selectableCount?, metadata? })`: Poll
+
+Send a native WhatsApp poll. Polls let users tap options directly in the chat. The Chat SDK has no poll concept.
+
+```ts
+// Single-choice poll (default)
+await requireBaileysAdapter(thread).sendPoll({
+  threadId: thread.id,
+  question: "When should we hold the team sync?",
+  options: ["Monday 10am", "Wednesday 2pm", "Friday 4pm"],
+});
+
+// Multi-choice poll, users can pick up to 2 options
+await requireBaileysAdapter(thread).sendPoll({
+  threadId: thread.id,
+  question: "Which topics should we cover?",
+  options: ["Design review", "Sprint planning", "Bugs", "Roadmap"],
+  selectableCount: 2,
+});
+```
+
+**Signature:**
+```ts
+sendPoll(args: {
+  threadId: string;
+  question: string;
+  options: string[];
+  selectableCount?: number;
+  metadata?: unknown;
+}): Promise<RawMessage<WAMessage>>
+
+sendPoll(
+  threadId: string,
+  question: string,
+  options: string[],
+  selectableCount?: number,         // default: 1
+  sendOptions?: { metadata?: unknown }
+): Promise<RawMessage<WAMessage>>
+```
+
+- The object form is recommended.
+- The positional form is deprecated and will be removed in the next major version.
+- `question`: the poll question text (must be non-empty).
+- `options`: 2 to 12 option strings (each must be non-empty; whitespace-only is rejected).
+- `selectableCount`: how many options a user can select. `1` = single-choice, `>1` = multi-choice, `0` = unlimited. Must be an integer ≥ 0.
+- `metadata`: arbitrary, opaque app-level context on the object form. In the positional form, pass this as `sendOptions.metadata`. Persisted alongside the poll's decryption state and round-tripped unchanged to every vote as `vote.metadata`. See [Per-poll metadata](#per-poll-metadata) below.
+- Throws if the socket is not connected.
+
+### Per-poll metadata
+
+Polls are often sent on behalf of a specific user or in a specific app context that you want back when votes arrive, for example: "only the user who triggered the bot may answer this poll", "this poll belongs to quiz #42", or a correlation id for a survey row.
+
+Instead of maintaining your own `pollMessageId → context` map, pass a `metadata` value to `sendPoll` and read it off `vote.metadata` in `onPollVote`. It's stored in the same `StateAdapter` entry as the poll's `messageSecret`, so it survives restarts exactly like the poll's decryption state does.
+
+```ts
+const poll = await wa.sendPoll({
+  threadId: thread.id,
+  question: "Lunch?",
+  options: ["Pizza", "Tacos"],
+  metadata: { askedBy: triggeringUserId },
+});
+
+wa.onPollVote(poll.id, async (vote) => {
+  const meta = vote.metadata as { askedBy: string } | undefined;
+  if (meta?.askedBy && vote.voter.userId !== meta.askedBy) {
+    return; // ignore votes from anyone but the user who triggered the poll
+  }
+  await thread.post(`${vote.voter.userName} picked ${vote.selectedOptions[0]}`);
+});
+```
+
+Notes:
+
+- Typed as `unknown` on the vote, so cast it to your app's shape at the read site. Anything JSON-serialisable is safe; persistence is whatever `state.set` can store.
+- Included verbatim on `listTrackedPolls()` entries, so resume-after-restart flows can route votes off `metadata` without a separate lookup.
+- Entries written by older adapter versions have no `metadata`; treat `undefined` as "no context attached".
+
+### Receiving poll votes
+
+WhatsApp poll votes arrive as `pollUpdateMessage` events and are end-to-end encrypted with a `messageSecret` that only the poll's sender holds. The adapter handles this transparently:
+
+<Steps>
+<Step>
+When you call `sendPoll(...)`, the adapter stores the poll's `messageSecret`, the option list, and the creator JID in the SDK's `StateAdapter` (`chat.getState()`), keyed by the poll's message ID.
+</Step>
+<Step>
+When a `pollUpdateMessage` arrives in `messages.upsert`, the adapter looks up the entry, decrypts the vote with `decryptPollVote` from Baileys, and maps the SHA-256 option hashes back to your original option strings.
+</Step>
+<Step>
+Decrypted votes are dispatched through **two** channels; pick whichever fits your handler.
+</Step>
+</Steps>
+
+#### Option A: `wa.onPollVote(handler)` (structured)
+
+Mirrors the Chat SDK's `chat.onReaction(...)` and `chat.onAction(...)` shape: register a handler post-construction, optionally filter by poll ID. You get the original question, the full option list, the option names the voter currently has selected, and the voter's `Author`.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+// 1. Listen to votes on every poll the bot sends.
+whatsapp.onPollVote(async (vote) => {
+  if (vote.selectedOptions.length === 0) {
+    console.log(`${vote.voter.userName} cleared their vote on "${vote.question}"`);
+    return;
+  }
+  console.log(
+    `${vote.voter.userName} voted ${vote.selectedOptions.join(", ")} on "${vote.question}"`
+  );
+});
+```
+
+Or scope the handler to a specific poll, which is natural to chain after `sendPoll`:
+
+```ts
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.text !== "!lunch") return;
+
+  const wa = requireBaileysAdapter(thread);
+  const poll = await wa.sendPoll({
+    threadId: thread.id,
+    question: "Where for lunch?",
+    options: ["Pizza", "Tacos", "Sushi"],
+  });
+
+  // Only votes on this specific poll fire this handler.
+  wa.onPollVote(poll.id, async (vote) => {
+    await thread.post(
+      `${vote.voter.userName} picked ${vote.selectedOptions[0]}`
+    );
+  });
+});
+```
+
+You can also pass an array of IDs to filter on several polls at once:
+
+```ts
+wa.onPollVote([weeklyPoll.id, sprintPoll.id], handler);
+```
+
+The handler fires for every vote update, including changes (the user re-tapping a different option) and clears (empty `selectedOptions`). Multiple handlers can be registered; all matching handlers run in registration order, and a thrown handler is logged but doesn't block the others.
+
+**`BaileysPollVote` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `threadId` | `string` | Encoded thread ID where the poll lives |
+| `pollMessageId` | `string` | Message ID of the original poll the bot sent |
+| `question` | `string` | Original poll question |
+| `options` | `string[]` | Original options in send order |
+| `selectedOptions` | `string[]` | Options the voter currently has selected (empty = cleared) |
+| `voter` | `Author` | The voter (in groups, this is the participant, not the group JID) |
+| `raw` | `WAMessage` | The raw Baileys vote message |
+| `metadata` | `unknown` | Whatever was passed as `sendOptions.metadata` to `sendPoll` (`undefined` if none) |
+
+**Signature:**
+```ts
+onPollVote(handler: (vote: BaileysPollVote) => void | Promise<void>): void;
+onPollVote(
+  pollMessageIds: string | string[],
+  handler: (vote: BaileysPollVote) => void | Promise<void>
+): void;
+```
+
+#### Option B: Standard Chat SDK message handlers
+
+Votes are also routed through `chat.processMessage` with `text` set to `selectedOptions.join(", ")`, so existing handlers (`onSubscribedMessage`, `onNewMention`, etc.) see them as regular incoming messages. Check `message.raw.message?.pollUpdateMessage` to distinguish votes from real text:
+
+```ts
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.raw.message?.pollUpdateMessage) {
+    await thread.post(`Got your vote: ${message.text}`);
+    return;
+  }
+  // ...regular text handling
+});
+```
+
+This is the right channel for "treat votes like any other message" use cases (e.g. piping into an LLM). For structured access (knowing the question, the full option list, or whether the vote was cleared), use `wa.onPollVote(...)`.
+
+#### Persistence is required
+
+Decrypting an incoming vote needs the `messageSecret` of the original poll, so the adapter must still have that entry in its state when the vote arrives. With the default in-memory `StateAdapter`, **restarts erase poll keys** and any votes received afterwards will be dropped with a warning like:
+
+```
+pollUpdateMessage: no stored poll for id=… (the bot may have restarted with a non-persistent state adapter)…
+```
+
+For production, back the SDK with a persistent state adapter (e.g. Redis). The same store the SDK already uses for thread subscriptions and distributed locking will pick up poll storage automatically:
+
+```ts
+import { Chat } from "chat";
+import { createRedisState } from "chat/state-redis"; // or your adapter of choice
+
+const bot = new Chat({
+  userName: "mybot",
+  adapters: { whatsapp },
+  state: createRedisState({ url: process.env.REDIS_URL! }),
+});
+```
+
+<Callout type="warn">
+`wa.onPollVote(...)` registrations live in the adapter's process memory and do **not** persist across restarts. If you register a per-poll handler and the process restarts, the persistence layer still has the poll's `messageSecret` (assuming Redis or similar), but no handler is registered to receive the vote. See **Resuming after a restart** below, or pair persistent state with a global `wa.onPollVote(handler)` that dispatches by `vote.pollMessageId` based on your own data model.
+</Callout>
+
+#### Resuming after a restart
+
+The adapter exposes the list of polls it's currently tracking, so re-register per-poll handlers on startup so votes resume routing without you having to keep a separate index.
+
+```ts
+const tracked = await whatsapp.listTrackedPolls();
+for (const poll of tracked) {
+  whatsapp.onPollVote(poll.pollMessageId, async (vote) => {
+    // your per-poll routing
+  });
+}
+```
+
+`listTrackedPolls()` returns `BaileysTrackedPoll[]`:
+
+| field | description |
+| --------------- | ----------------------------------------------------------------- |
+| `pollMessageId` | Pass to `wa.onPollVote(pollId, handler)` to re-attach a handler. |
+| `threadId` | Encoded thread ID where the poll was sent. |
+| `question` | Original poll question. |
+| `options` | Original options (in send order). |
+| `metadata` | Whatever was passed as `sendOptions.metadata` to `sendPoll`. |
+
+Entries whose poll TTL has expired are filtered out automatically, so the returned list only contains polls that can still decrypt incoming votes.
+
+When a poll closes and you no longer want to receive votes on it, drop its stored metadata:
+
+```ts
+await whatsapp.forgetPoll(pollMessageId);
+```
+
+#### Tuning the TTL
+
+Stored poll metadata defaults to a 30-day TTL. Override it via `pollTtlMs`:
+
+```ts
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  pollTtlMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+});
+```
+
+Pass `0` to keep entries until manually evicted. Storage keys are namespaced as `baileys:<adapterName>:poll:<pollMessageId>` so multi-account setups don't collide.
+
+#### Caveats
+
+- Votes on polls **sent by other clients** (e.g. a human user sent the poll, the bot is just listening) cannot be decrypted because the bot doesn't hold the `messageSecret`. The `pollUpdateMessage` is dropped with a warning.
+- Re-voting and clearing produce additional `pollUpdateMessage` events; the latest one always represents the voter's current choice. Track per-voter state yourself if you need an audit trail.
+- Multi-select polls produce one `pollUpdateMessage` containing all currently-selected options, not one per option.
+
+---
+
+## `fetchGroupParticipants(threadId)`: Group membership
+
+Fetch the full participant list for a group thread, including admin roles. The Chat SDK has no group-membership concept.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onNewMention(async (thread, message) => {
+  if (thread.isDM) return;
+
+  const participants = await requireBaileysAdapter(thread)
+    .fetchGroupParticipants(thread.id);
+  const admins = participants.filter(p => p.isAdmin);
+  const total = participants.length;
+
+  await thread.post(
+    `This group has ${total} members and ${admins.length} admin(s).`
+  );
+  await thread.subscribe();
+});
+```
+
+Check if the sender is an admin before allowing privileged commands:
+
+```ts
+bot.onSubscribedMessage(async (thread, message) => {
+  if (thread.isDM || message.text !== "!shutdown") return;
+
+  const participants = await requireBaileysAdapter(thread)
+    .fetchGroupParticipants(thread.id);
+  const sender = participants.find(p => p.userId === message.author.userId);
+
+  if (!sender?.isAdmin) {
+    await thread.post("Only admins can use that command.");
+    return;
+  }
+
+  await thread.post("Shutting down...");
+});
+```
+
+**Signature:**
+```ts
+fetchGroupParticipants(threadId: string): Promise<BaileysGroupParticipant[]>
+```
+
+**`BaileysGroupParticipant` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `userId` | `string` | The participant's JID (e.g. `"15551234567@s.whatsapp.net"`) |
+| `isAdmin` | `boolean` | `true` for both admin and super-admin roles |
+| `isSuperAdmin` | `boolean` | `true` only for the group creator |
+
+- Throws a `ValidationError` if the thread is not a group.
+- Throws if the socket is not connected.
+
+---
+
+## `botUserId`: Your bot's WhatsApp identity
+
+After connecting, this property contains your bot's WhatsApp JID (e.g., `15551234567@s.whatsapp.net`). It's useful for logging, filtering, or when you need to identify which account a message came from in multi-account setups.
+
+```ts
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const wa = requireBaileysAdapter(thread);
+  
+  // Log which account received this
+  console.log(`Message to ${wa.botUserId}: ${message.text}`);
+  
+  // Filter paired-account messages manually if your bot should ignore them too.
+  // `author.isMe` only filters messages actually posted by this adapter.
+  if (message.author.userId === wa.botUserId) {
+    return;
+  }
+});
+```
+
+**Returns:** `string | undefined`
+
+- The bot's JID when connected
+- `undefined` before `connect()` is called or after `disconnect()`
+
+This is a read-only property, not a method.

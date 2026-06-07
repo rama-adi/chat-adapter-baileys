@@ -1,32 +1,35 @@
-# Concepts Mapping
+---
+title: "Concepts Mapping"
+description: "How Chat SDK concepts like Thread, Channel, and Message map to WhatsApp via this adapter"
+---
 
 The Chat SDK uses a platform-agnostic model (`Thread`, `Channel`, `Message`, etc.) that adapters translate to and from each platform's native concepts. This page explains how those Chat SDK concepts map to WhatsApp's model when using this adapter.
 
-Related docs:
-
-- [Quickstart](./quickstart.md) — getting started from scratch
-- [Events and Lifecycle](./events-and-lifecycle.md) — connection flow and message handling
-- [Extensions](./extensions.md) — WhatsApp-specific methods
-- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — working with multiple accounts
-- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
-- [Error Handling](./error-handling.md) — validation errors and troubleshooting
-- [Migrating from v1 to v2](../migration/v1-to-v2.md) — upgrade guide
+<Cards>
+  <Card title="Quickstart" href="/docs/chat-adapter-baileys/v2/quickstart">Getting started from scratch</Card>
+  <Card title="Events and Lifecycle" href="/docs/chat-adapter-baileys/v2/events-and-lifecycle">Connection flow and message handling</Card>
+  <Card title="Extensions" href="/docs/chat-adapter-baileys/v2/extensions">WhatsApp-specific methods</Card>
+  <Card title="Thread IDs and Multi-Account" href="/docs/chat-adapter-baileys/v2/thread-ids-and-multi-account">Working with multiple accounts</Card>
+  <Card title="Formatting and Media" href="/docs/chat-adapter-baileys/v2/formatting-and-media">Text formatting and file handling</Card>
+  <Card title="Error Handling" href="/docs/chat-adapter-baileys/v2/error-handling">Validation errors and troubleshooting</Card>
+  <Card title="Migrating from v1 to v2" href="/docs/chat-adapter-baileys/v2/migration">Upgrade guide</Card>
+</Cards>
 
 ---
 
 ## Thread → WhatsApp conversation (JID)
 
-In the Chat SDK, a **thread** is a container for a sequence of messages — typically a chat room, DM, or topic thread. On WhatsApp there are only two kinds of conversations:
+In the Chat SDK, a **thread** is a container for a sequence of messages, typically a chat room, DM, or topic thread. On WhatsApp there are only two kinds of conversations:
 
-- **Direct message (DM)** — a one-on-one chat with another user. JID format: `15551234567@s.whatsapp.net`
-- **Group chat** — a group conversation with multiple participants. JID format: `123456789-1234567890@g.us`
+- **Direct message (DM):** a one-on-one chat with another user. JID format: `15551234567@s.whatsapp.net`
+- **Group chat:** a group conversation with multiple participants. JID format: `123456789-1234567890@g.us`
 
 Each WhatsApp JID maps 1-to-1 to a Chat SDK thread. There is no concept of sub-threads or topics inside a WhatsApp conversation, so a thread and its channel are always the same conversation.
 
 ```ts
-// When the bot receives a message, thread.threadId contains the encoded JID:
+// When the bot receives a message, thread.id contains the encoded JID:
 bot.onSubscribedMessage(async (thread, message) => {
-  console.log(thread.threadId); // e.g. "baileys:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ"
+  console.log(thread.id); // e.g. "baileys:MTU1NTEyMzQ1NjdAcy53aGF0c2FwcC5uZXQ"
   console.log(thread.isDM);     // true for DMs, false for groups
 });
 ```
@@ -35,13 +38,13 @@ bot.onSubscribedMessage(async (thread, message) => {
 
 ## Channel → same WhatsApp conversation
 
-The Chat SDK has a `Channel` abstraction for platforms that distinguish between a top-level channel and threads inside it (e.g. Slack channels with message threads). WhatsApp has no such distinction — every conversation is flat.
+The Chat SDK has a `Channel` abstraction for platforms that distinguish between a top-level channel and threads inside it (e.g. Slack channels with message threads). WhatsApp has no such distinction; every conversation is flat.
 
 Because of this:
 
 - `channelIdFromThreadId()` returns the thread ID unchanged.
-- `postChannelMessage()` delegates to `postMessage()` — posting to the "channel" is the same as posting to the conversation.
-- `listThreads()` returns an empty array — there are no sub-threads to list.
+- `postChannelMessage()` delegates to `postMessage()`, so posting to the "channel" is the same as posting to the conversation.
+- `listThreads()` returns an empty array because there are no sub-threads to list.
 
 In practice you won't call these methods directly; they're used by the Chat SDK internally.
 
@@ -59,11 +62,17 @@ When Baileys delivers a `WAMessage`, the adapter converts it into a Chat SDK `Me
 | `message.attachments` | Populated for image, video, audio, and document messages |
 | `message.author.userId` | Sender's JID |
 | `message.author.userName` | `msg.pushName` (the sender's display name) |
-| `message.author.isMe` | `msg.key.fromMe` |
+| `message.author.isMe` | `true` only for messages sent by this adapter instance |
+| `message.author.isBot` | `true` only for messages sent by this adapter instance |
 | `message.metadata.dateSent` | `msg.messageTimestamp` converted to a `Date` |
 | `message.metadata.edited` | Detected from `editedMessage` or protocol message type 14 |
+| `message.metadata.fromMe` | `msg.key.fromMe`, the Baileys flag for messages from the paired WhatsApp account |
 
-Example — log full message info when the bot receives a mention:
+<Callout type="info">
+  Baileys' `msg.key.fromMe` means "sent from the paired WhatsApp account." Chat SDK's `message.author.isMe` means "sent by this bot/adapter." In `chat-adapter-baileys`, personal-phone messages from the paired account keep `message.metadata.fromMe === true` but use `message.author.isMe === false`, so they still reach handlers like `onNewMessage`. Messages posted through the adapter are tracked by Baileys message ID and are marked `isMe`/`isBot` when WhatsApp echoes them back, letting Chat SDK's central self-filter avoid feedback loops.
+</Callout>
+
+Example: log full message info when the bot receives a mention:
 
 ```ts
 bot.onNewMention(async (thread, message) => {
@@ -72,6 +81,7 @@ bot.onNewMention(async (thread, message) => {
   console.log("Text:", message.text);
   console.log("Sent at:", message.metadata.dateSent);
   console.log("Is edited:", message.metadata.edited);
+  console.log("From paired WhatsApp account:", message.metadata.fromMe);
   console.log("Attachments:", message.attachments.length);
 });
 ```
@@ -82,8 +92,8 @@ bot.onNewMention(async (thread, message) => {
 
 WhatsApp supports emoji reactions on individual messages. The adapter maps the Chat SDK reaction methods to Baileys' `react` payload:
 
-- `message.addReaction("👍")` — sends a reaction with the given emoji to the message.
-- `message.removeReaction("👍")` — sends an empty-string reaction, which WhatsApp interprets as removing any existing reaction.
+- `message.addReaction("👍")`: sends a reaction with the given emoji to the message.
+- `message.removeReaction("👍")`: sends an empty-string reaction, which WhatsApp interprets as removing any existing reaction.
 
 ```ts
 bot.onSubscribedMessage(async (thread, message) => {
@@ -106,13 +116,15 @@ bot.onReaction(["👍", "👎"], async (event) => {
 });
 ```
 
-> **Note:** `bot.onReaction()` is a Chat SDK method, not an adapter-specific method. The adapter normalizes WhatsApp's `reactionMessage` payloads and routes them through `chat.processReaction()`.
+<Callout type="info">
+  `bot.onReaction()` is a Chat SDK method, not an adapter-specific method. The adapter normalizes WhatsApp's `reactionMessage` payloads and routes them through `chat.processReaction()`.
+</Callout>
 
 ---
 
 ## Typing indicator
 
-`thread.startTyping()` sends WhatsApp's "composing" presence update, which shows the "typing..." indicator to other participants. This is a best-effort no-op — if the socket isn't connected when called, it silently does nothing.
+`thread.startTyping()` sends WhatsApp's "composing" presence update, which shows the "typing..." indicator to other participants. This is a best-effort no-op: if the socket isn't connected when called, it silently does nothing.
 
 ```ts
 bot.onNewMention(async (thread, message) => {
@@ -125,7 +137,9 @@ bot.onNewMention(async (thread, message) => {
 });
 ```
 
-> **Note:** WhatsApp presence updates are rate-limited. Sending them too frequently may be ignored by clients.
+<Callout type="warn">
+  WhatsApp presence updates are rate-limited. Sending them too frequently may be ignored by clients.
+</Callout>
 
 ---
 
@@ -137,7 +151,7 @@ Baileys connects to WhatsApp by opening a **persistent outbound WebSocket** to W
 - `handleWebhook()` always returns HTTP `501 Not Implemented`.
 - Incoming messages arrive via the `messages.upsert` Baileys event, which the adapter subscribes to internally.
 
-If you have HTTP server code that routes to `adapter.handleWebhook()`, nothing will break — it just returns 501. To actually receive messages in gateway mode, call `await bot.initialize()` and then `adapter.connect()`.
+If you have HTTP server code that routes to `adapter.handleWebhook()`, nothing will break; it just returns 501. To actually receive messages in gateway mode, call `await bot.initialize()` and then `adapter.connect()`.
 
 ### What handleWebhook returns
 
@@ -150,16 +164,16 @@ When called, `handleWebhook()` returns a `Response` with:
 This is helpful if you're building a multi-adapter bot that handles both WebSocket adapters (WhatsApp) and HTTP webhook adapters (Slack, Teams):
 
 ```ts
-// Express example — works for both webhook and WebSocket adapters
+// Express example, works for both webhook and WebSocket adapters
 app.post("/webhook/:adapter", async (req, res) => {
   const adapter = bot.adapters[req.params.adapter];
   if (!adapter) return res.status(404).send("Unknown adapter");
   
   const response = await adapter.handleWebhook(req);
   
-  // WhatsApp returns 501 — that's expected
+  // WhatsApp returns 501, which is expected
   if (response.status === 501) {
-    return res.status(200).send("WebSocket adapter — use connect(), not webhooks");
+    return res.status(200).send("WebSocket adapter: use connect(), not webhooks");
   }
   
   // Webhook adapters return 200 on success
@@ -188,7 +202,7 @@ const bot = new Chat({ /* ... */ });
 
 // Persist every incoming message
 bot.onAnyMessage(async (thread, message) => {
-  const jid = thread.threadId;
+  const jid = thread.id;
   const existing = messageStore.get(jid) ?? [];
   existing.push(message.raw);
   messageStore.set(jid, existing);

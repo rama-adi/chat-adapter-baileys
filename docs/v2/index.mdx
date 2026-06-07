@@ -1,0 +1,217 @@
+---
+title: "Introduction"
+description: "Guide to building WhatsApp bots with the Baileys Chat SDK adapter."
+---
+
+**`chat-adapter-baileys`** is the WhatsApp (Baileys) adapter for the [Chat SDK](https://www.npmjs.com/package/chat).
+
+<Callout type="warn" title="Unofficial WhatsApp API">
+  This adapter uses Baileys, a third-party unofficial WhatsApp Web API. It is
+  not an official WhatsApp/Meta API and may break when WhatsApp changes internal
+  protocols. WhatsApp may also suspend or ban numbers/accounts that use
+  unofficial automation. Use at your own risk and evaluate compliance
+  requirements before production use.
+</Callout>
+
+...with that out of the way, let's continue with the docs.
+
+This package lets you run Chat SDK bots on WhatsApp via Baileys. It handles the
+WhatsApp WebSocket connection, message parsing, formatting, media attachments,
+reactions, and typing indicators, so you can focus on your bot logic.
+
+## Why use it?
+
+- **Write once, run anywhere:** your bot logic targets the platform-agnostic Chat SDK, so the same handlers work across every adapter. Add or swap platforms without rewriting.
+- **No official API required:** connect an ordinary WhatsApp account via QR or pairing code. No Meta Cloud API approval, business verification, or per-message fees.
+- **Batteries included:** the adapter manages the WebSocket connection, message parsing, formatting, media up/download, reactions, and typing indicators for you.
+- **Multi-account ready:** run several WhatsApp numbers from one bot, each isolated by a thread-ID prefix.
+- **WhatsApp-native extras:** quoted replies, read receipts, presence, location pins, polls, and group-participant lookups beyond the base Chat SDK interface.
+- **Resilient sessions:** credentials persist after first login (no re-scan), and the connection auto-reconnects on unexpected drops.
+
+## Beyond the official API
+
+Because it talks to WhatsApp Web directly, the adapter exposes capabilities that the official WhatsApp Cloud API restricts or doesn't offer:
+
+- **Free-form messaging:** message any chat without the 24-hour customer-service window or pre-approved message templates.
+- **Reactions:** add, remove, and observe emoji reactions.
+- **Read receipts:** send blue double-ticks on demand with `markRead(...)`.
+- **Presence control:** set the bot's global online/offline status and show typing indicators.
+- **Polls:** create native WhatsApp polls with `sendPoll(...)`.
+- **Location pins:** send native location messages with `sendLocation(...)`.
+- **Group insights:** list group participants and their admin roles with `fetchGroupParticipants(...)`.
+- **Quoted replies:** reply with the native WhatsApp reply bubble via `reply(...)`.
+
+See [Extensions](/docs/chat-adapter-baileys/v2/extensions) for the full list and usage examples.
+
+## Support Overview
+
+### Chat SDK Base
+
+| Feature | Support |
+|---|---|
+| Post message | ✅ |
+| Edit message | ✅ |
+| Delete message | ✅ |
+| Add reactions | ✅ |
+| Remove reactions | ✅ |
+| Observe reactions | ✅ |
+| Typing indicator | ✅ |
+| DMs | ✅ |
+| Fetch thread info | ✅ |
+| Fetch channel info | ✅ |
+| Post channel message | ✅ |
+| Fetch messages | ⚠️ Returns empty unless you persist your own history |
+| Fetch single message | ❌ |
+| Fetch channel messages | ⚠️ Returns empty unless you persist your own history |
+| List threads | ❌ |
+| Streaming | ❌ |
+| Scheduled messages | ❌ |
+| Slash commands | ❌ |
+| Modals | ❌ |
+| Ephemeral messages | ❌ |
+
+### Baileys Extras
+
+| Feature | Support |
+|---|---|
+| Quoted reply bubble | ✅ `reply(message, text)` |
+| Read receipts | ✅ `markRead(...)` |
+| Global presence | ✅ `setPresence(...)` |
+| Location messages | ✅ `sendLocation(...)` |
+| Polls | ✅ `sendPoll(...)` |
+| Group participant lookup | ✅ `fetchGroupParticipants(...)` |
+
+## Getting Started
+
+New to the adapter? Start here:
+
+<Cards>
+  <Card title="Quickstart" href="/docs/chat-adapter-baileys/v2/quickstart">Install, configure, and run your first WhatsApp bot in 10 minutes</Card>
+  <Card title="Concepts" href="/docs/chat-adapter-baileys/v2/concepts">Understand how Chat SDK concepts map to WhatsApp</Card>
+  <Card title="Runnable Example" href="/docs/chat-adapter-baileys/v2/example">Full working code with common patterns</Card>
+</Cards>
+
+## Core Topics
+
+### Connection and Lifecycle
+
+<Cards>
+  <Card title="Events and Lifecycle" href="/docs/chat-adapter-baileys/v2/events-and-lifecycle">Connection flow, auth (QR and pairing code), reconnection behavior, and message flow</Card>
+</Cards>
+
+### Thread Management
+
+<Cards>
+  <Card title="Thread IDs and Multi-Account" href="/docs/chat-adapter-baileys/v2/thread-ids-and-multi-account">Understanding thread IDs, running multiple WhatsApp accounts, and proactive DM opening</Card>
+</Cards>
+
+### Messages and Media
+
+<Cards>
+  <Card title="Formatting and Media" href="/docs/chat-adapter-baileys/v2/formatting-and-media">Text formatting, cards, sending and downloading media attachments, and the BaileysFormatConverter</Card>
+  <Card title="Extensions" href="/docs/chat-adapter-baileys/v2/extensions">WhatsApp-specific methods: quoted replies, read receipts, location pins, polls, and group participants</Card>
+</Cards>
+
+### Error Handling
+
+<Cards>
+  <Card title="Error Handling" href="/docs/chat-adapter-baileys/v2/error-handling">Common validation errors, how to handle them, and best practices for production bots</Card>
+</Cards>
+
+## Migration
+
+<Cards>
+  <Card title="Migrating from v1 to v2" href="/docs/chat-adapter-baileys/v2/migration">Breaking changes and step-by-step upgrade guide</Card>
+</Cards>
+
+---
+
+## Quick Reference
+
+**Package exports:**
+
+```typescript
+import {
+  createBaileysAdapter,   // Factory function
+  BaileysAdapter,         // Class (for type annotations)
+  BaileysFormatConverter, // Text format converter
+  isBaileysAdapter,       // Type guard
+  requireBaileysAdapter,  // Type assertion
+} from "chat-adapter-baileys";
+import { Chat } from "chat";
+import { createMemoryState } from "@chat-adapter/state-memory";
+import { useMultiFileAuthState } from "baileys";
+```
+
+**QR code authentication (most common):**
+
+```typescript
+const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
+
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  userName: "my-bot",
+  onQR: async (qr) => {
+    const QRCode = await import("qrcode");
+    console.log(await QRCode.toString(qr, { type: "terminal" }));
+  },
+});
+
+const bot = new Chat({
+  userName: "my-bot",
+  adapters: { whatsapp },
+  state: createMemoryState(),
+});
+
+bot.onNewMention(async (thread, message) => {
+  await thread.post("Hello!");
+  await thread.subscribe();
+});
+
+await bot.initialize();
+await whatsapp.connect();
+```
+
+**Pairing code authentication (alternative):**
+
+```typescript
+const whatsapp = createBaileysAdapter({
+  auth: { state, saveCreds },
+  userName: "my-bot",
+  phoneNumber: "12345678901",  // E.164 format, no "+"
+  onPairingCode: (code) => {
+    console.log("Enter this code in WhatsApp → Linked Devices:", code);
+  },
+});
+```
+
+**Accessing WhatsApp-specific methods:**
+
+```typescript
+import { requireBaileysAdapter } from "chat-adapter-baileys";
+
+bot.onSubscribedMessage(async (thread, message) => {
+  const wa = requireBaileysAdapter(thread);
+  await wa.reply(message, "Got it!");
+  await wa.markRead({
+    threadId: thread.id,
+    messageIds: [message.id],
+  });
+});
+```
+
+---
+
+## Need Help?
+
+<Cards>
+  <Card title="Error Handling" href="/docs/chat-adapter-baileys/v2/error-handling">Check the Error Handling guide for common issues</Card>
+  <Card title="Runnable Example" href="/docs/chat-adapter-baileys/v2/example">Review the Runnable Example for complete working code</Card>
+  <Card title="Concepts" href="/docs/chat-adapter-baileys/v2/concepts">See Concepts for architectural understanding</Card>
+</Cards>
+
+## Package Info
+
+- **npm:** `chat-adapter-baileys`
+- **Repository:** Part of the Chat SDK ecosystem
+- **Baileys version:** `>=7.0.0-rc13 <8`

@@ -1,3 +1,13 @@
+---
+title: "Runnable Example"
+description: "Complete runnable chat-adapter-baileys example showing common WhatsApp bot patterns."
+---
+
+<Callout type="info">
+  A complete, runnable example covering the most common patterns. Copy it into your project and run it with `tsx`.
+</Callout>
+
+```ts title="example.ts"
 /**
  * Comprehensive runnable example for chat-adapter-baileys.
  *
@@ -9,7 +19,7 @@
  *
  * On first run, a QR code is printed to the terminal. Scan it with WhatsApp
  * (Settings → Linked Devices → Link a Device). Credentials are saved to
- * ./auth_info and reused on subsequent runs — no re-scan needed.
+ * ./auth_info and reused on subsequent runs, so no re-scan is needed.
  *
  * What this demonstrates:
  *   - QR-based auth and session persistence
@@ -41,7 +51,7 @@ const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
 // 2. Create the adapter
 //
 // The adapter connects to WhatsApp via Baileys. The onQR callback is called
-// whenever a new QR code is available — render it however suits your setup.
+// whenever a new QR code is available; render it however suits your setup.
 // ---------------------------------------------------------------------------
 
 const whatsapp = createBaileysAdapter({
@@ -83,14 +93,14 @@ function extractCommand(text: string): { cmd: string; args: string[] } | null {
 }
 
 /**
- * Summarize attachments without downloading them — useful for quick acks.
+ * Summarize attachments without downloading them, useful for quick acks.
  * Returns null if the message has no attachments.
  */
 async function summarizeIncomingMedia(message: Message): Promise<string | null> {
   if (!message.attachments.length) return null;
 
   const lines = message.attachments.map(
-    (a) => `• ${a.type}${a.mimeType ? ` (${a.mimeType})` : ""}${a.name ? ` — ${a.name}` : ""}`
+    (a) => `• ${a.type}${a.mimeType ? ` (${a.mimeType})` : ""}${a.name ? `: ${a.name}` : ""}`
   );
   return `Received ${message.attachments.length} attachment(s):\n${lines.join("\n")}`;
 }
@@ -120,7 +130,7 @@ bot.onNewMention(async (thread, message) => {
 // 4b. Handle messages in subscribed threads
 //
 // After thread.subscribe(), every new message in that thread fires this
-// handler — both in groups and in DMs if you subscribed to them.
+// handler, both in groups and in DMs if you subscribed to them.
 // ---------------------------------------------------------------------------
 
 bot.onSubscribedMessage(async (thread, message) => {
@@ -143,10 +153,10 @@ bot.onSubscribedMessage(async (thread, message) => {
     case "help":
       await thread.post(
         "Available commands:\n" +
-          "  !ping          — check if the bot is alive\n" +
-          "  !echo <text>   — repeat back your text\n" +
-          "  !whoami        — show your user info\n" +
-          "  !unsubscribe   — stop the bot from watching this thread"
+          "  !ping          - check if the bot is alive\n" +
+          "  !echo <text>   - repeat back your text\n" +
+          "  !whoami        - show your user info\n" +
+          "  !unsubscribe   - stop the bot from watching this thread"
       );
       return;
 
@@ -170,7 +180,7 @@ bot.onSubscribedMessage(async (thread, message) => {
 
     case "unsubscribe":
       await thread.unsubscribe();
-      await thread.post("Done — I'll stop watching this thread.");
+      await thread.post("Done, I'll stop watching this thread.");
       return;
 
     default:
@@ -193,7 +203,7 @@ bot.onNewMessage(/.+/, async (thread, message) => {
   const parsed = extractCommand(message.text);
 
   if (!parsed) {
-    // Not a command — echo the message back
+    // Not a command, echo the message back
     await thread.post(`You said: "${message.text}"\nSend !help for commands.`);
     return;
   }
@@ -257,3 +267,4 @@ process.on("SIGINT", async () => {
 await bot.initialize();
 await whatsapp.connect();
 console.log("WhatsApp adapter connected. Waiting for messages...");
+```

@@ -1,0 +1,35 @@
+---
+title: "Kitchen Sink Example"
+description: "Runnable kitchen sink chat-adapter-baileys WhatsApp bot example."
+---
+
+The kitchen sink example is included in this repo: [`examples/example.ts`](https://github.com/rama-adi/chat-adapter-baileys/blob/main/examples/example.ts).
+
+Run it with QR auth:
+
+```bash
+pnpm dlx tsx examples/example.ts
+```
+
+Use pairing-code auth instead of QR by setting `WA_PAIRING_PHONE` to an E.164 number without the leading `+`:
+
+```bash
+WA_PAIRING_PHONE=15551234567 pnpm dlx tsx examples/example.ts
+```
+
+After connecting, send `!help` in WhatsApp. The example covers:
+
+- `metadata.fromMe` vs `author.isMe` for paired-account messages
+- `onNewMention`, `onNewMessage`, and `onSubscribedMessage`
+- named `markRead`, `sendLocation`, and `sendPoll` arguments
+- native quoted replies
+- reactions
+- location pins
+- poll metadata
+- global and scoped poll vote handlers
+- tracked poll listing and resumed poll handlers
+- pairing-code login
+
+To verify the paired-account identity behavior, send `!identity` from the paired phone account itself. The reply should show `metadata.fromMe=true` and `author.isMe=false`, which means the owner-sent message reached `onNewMessage` instead of being filtered as an adapter echo.
+
+To verify poll votes, send `!poll`, select an option, change options, and clear the vote. The global poll handler logs to the terminal, and the scoped poll handler posts the selected option back to WhatsApp.

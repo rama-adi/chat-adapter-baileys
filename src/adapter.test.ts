@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import type { ChatInstance } from "chat";
 import type { WAMessage } from "baileys";
 import {
+  decryptPollVote,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   generateMessageIDV2,
@@ -16,7 +18,11 @@ import type { BaileysAdapterConfig } from "./types.js";
 const { mockSocket, mockMakeWASocket } = vi.hoisted(() => {
   const socket = {
     ev: { process: vi.fn() },
-    user: { id: "15551234567@s.whatsapp.net" },
+    user: {
+      id: "15551234567@s.whatsapp.net",
+      lid: undefined as string | undefined,
+      phoneNumber: undefined as string | undefined,
+    },
     sendMessage: vi.fn(),
     groupMetadata: vi.fn(),
     sendPresenceUpdate: vi.fn(),
@@ -53,6 +59,28 @@ vi.mock("baileys", () => ({
   makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
   downloadMediaMessage: vi.fn().mockResolvedValue(Buffer.from("mock-media")),
   generateMessageIDV2: vi.fn(() => "generated-id"),
+  jidNormalizedUser: (jid: string | undefined) =>
+    (jid ?? "").split(":")[0].split("/")[0] || "",
+  getKeyAuthor: (
+    key: { fromMe?: boolean; participant?: string; remoteJid?: string } | undefined,
+    meId?: string
+  ) => {
+    if (!key) return "";
+    if (key.fromMe) return (meId ?? "").split(":")[0].split("/")[0] || "";
+    if (key.participant) return key.participant.split(":")[0].split("/")[0];
+    return (key.remoteJid ?? "").split(":")[0].split("/")[0];
+  },
+  // Test contract: encPayload is the utf8 bytes of the chosen option name(s),
+  // joined by "|" for multi-select. Returns the SHA256 of each option as the
+  // "selectedOptions" array — matching what the real WhatsApp protocol does.
+  decryptPollVote: vi.fn(({ encPayload }: { encPayload: Uint8Array }) => {
+    const decoded = Buffer.from(encPayload).toString("utf8");
+    if (decoded.length === 0) return { selectedOptions: [] };
+    const names = decoded.split("|");
+    return {
+      selectedOptions: names.map((n) => createHash("sha256").update(n).digest()),
+    };
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -69,10 +97,37 @@ const mockLogger = {
   child: vi.fn().mockReturnThis(),
 };
 
+const stateStore = new Map<string, unknown>();
+const stateLists = new Map<string, unknown[]>();
+const mockState = {
+  get: vi.fn(async <T>(key: string) => (stateStore.get(key) as T) ?? null),
+  set: vi.fn(async (key: string, value: unknown) => {
+    stateStore.set(key, value);
+  }),
+  delete: vi.fn(async (key: string) => {
+    stateStore.delete(key);
+  }),
+  appendToList: vi.fn(
+    async (
+      key: string,
+      value: unknown,
+      options?: { maxLength?: number; ttlMs?: number }
+    ) => {
+      const list = stateLists.get(key) ?? [];
+      list.push(value);
+      if (options?.maxLength && list.length > options.maxLength) {
+        list.splice(0, list.length - options.maxLength);
+      }
+      stateLists.set(key, list);
+    }
+  ),
+  getList: vi.fn(async <T>(key: string) => (stateLists.get(key) as T[]) ?? []),
+};
+
 const mockChat = {
   getLogger: vi.fn(() => mockLogger),
   processMessage: vi.fn(),
-  getState: vi.fn(),
+  getState: vi.fn(() => mockState),
   getUserName: vi.fn(() => "mybot"),
   processAction: vi.fn(),
   processAppHomeOpened: vi.fn(),
@@ -89,12 +144,29 @@ const mockAuthState: BaileysAdapterConfig["auth"] = {
   saveCreds: vi.fn(),
 };
 
+const generatedMessageOptions = expect.objectContaining({
+  messageId: "generated-id",
+});
+
 function makeAdapter(overrides?: Partial<BaileysAdapterConfig>): BaileysAdapter {
   return new BaileysAdapter({
     auth: mockAuthState,
     userName: "test-bot",
     ...overrides,
   });
+}
+
+function mockDefaultPollVoteDecrypt(): void {
+  vi.mocked(decryptPollVote).mockImplementation(
+    ({ encPayload }: { encPayload: Uint8Array }) => {
+      const decoded = Buffer.from(encPayload).toString("utf8");
+      if (decoded.length === 0) return { selectedOptions: [] } as never;
+      const names = decoded.split("|");
+      return {
+        selectedOptions: names.map((n) => createHash("sha256").update(n).digest()),
+      } as never;
+    }
+  );
 }
 
 function makeDMMessage(overrides?: Partial<WAMessage>): WAMessage {
@@ -157,16 +229,33 @@ describe("BaileysAdapter", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    stateStore.clear();
+    stateLists.clear();
     capturedEvHandler = null;
 
     mockSocket.ev.process.mockImplementation((handler: EvHandler) => {
       capturedEvHandler = handler;
     });
-    mockSocket.sendMessage.mockResolvedValue({
-      key: { id: "sent-msg-id", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
-      message: { conversation: "sent" },
-    });
+    mockSocket.user.id = "15551234567@s.whatsapp.net";
+    mockSocket.user.lid = undefined;
+    mockSocket.user.phoneNumber = undefined;
+    mockAuthState.state.creds = {} as never;
+    mockSocket.sendMessage.mockImplementation(
+      async (
+        jid: string,
+        _content: unknown,
+        options?: { messageId?: string }
+      ) => ({
+        key: {
+          id: options?.messageId ?? "sent-msg-id",
+          remoteJid: jid,
+          fromMe: true,
+        },
+        message: { conversation: "sent" },
+      })
+    );
     mockSocket.requestPairingCode.mockResolvedValue("PAIR-1234");
+    mockDefaultPollVoteDecrypt();
 
     adapter = makeAdapter();
     await adapter.initialize(mockChat);
@@ -174,6 +263,7 @@ describe("BaileysAdapter", () => {
 
   afterEach(() => {
     capturedEvHandler = null;
+    vi.useRealTimers();
   });
 
   // ── Thread ID ──────────────────────────────────────────────────────────────
@@ -298,6 +388,7 @@ describe("BaileysAdapter", () => {
       expect(msg.author.userId).toBe("15551234567@s.whatsapp.net");
       expect(msg.author.userName).toBe("John");
       expect(msg.author.isMe).toBe(false);
+      expect(msg.metadata.fromMe).toBe(false);
       expect(adapter.decodeThreadId(msg.threadId).jid).toBe("15551234567@s.whatsapp.net");
     });
 
@@ -306,11 +397,47 @@ describe("BaileysAdapter", () => {
       expect(msg.author.userId).toBe("15559876543@s.whatsapp.net");
     });
 
-    it("marks fromMe messages correctly", () => {
+    it("does not treat paired-phone messages as bot-authored", async () => {
+      await adapter.connect();
+      mockSocket.user.id = "15550000000@s.whatsapp.net";
       const raw = makeDMMessage({
-        key: { remoteJid: "15551234567@s.whatsapp.net", id: "m1", fromMe: true },
+        key: { remoteJid: "15559876543@s.whatsapp.net", id: "m1", fromMe: true },
       });
-      expect(adapter.parseMessage(raw).author.isMe).toBe(true);
+      const msg = adapter.parseMessage(raw);
+      expect(msg.author.isMe).toBe(false);
+      expect(msg.author.isBot).toBe(false);
+      expect(msg.author.userId).toBe("15550000000@s.whatsapp.net");
+      expect(adapter.decodeThreadId(msg.threadId).jid).toBe("15559876543@s.whatsapp.net");
+      expect(msg.metadata.fromMe).toBe(true);
+    });
+
+    it("marks messages sent by the adapter as bot-authored when echoed by Baileys", async () => {
+      await adapter.connect();
+      const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      await adapter.postMessage(threadId, { raw: "Hello from bot" });
+
+      const echoed = makeDMMessage({
+        key: { remoteJid: "15551234567@s.whatsapp.net", id: "generated-id", fromMe: true },
+        pushName: "Me",
+      });
+      const msg = adapter.parseMessage(echoed);
+      expect(msg.author.isMe).toBe(true);
+      expect(msg.author.isBot).toBe(true);
+      expect(msg.metadata.fromMe).toBe(true);
+    });
+
+    it("does not mark cached IDs as adapter-authored unless Baileys also marks fromMe", async () => {
+      await adapter.connect();
+      const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+      await adapter.postMessage(threadId, { raw: "Hello from bot" });
+
+      const inbound = makeDMMessage({
+        key: { remoteJid: "15551234567@s.whatsapp.net", id: "generated-id", fromMe: false },
+      });
+      const msg = adapter.parseMessage(inbound);
+      expect(msg.author.isMe).toBe(false);
+      expect(msg.author.isBot).toBe(false);
+      expect(msg.metadata.fromMe).toBe(false);
     });
 
     it("extracts text from extendedTextMessage", () => {
@@ -522,9 +649,10 @@ describe("BaileysAdapter", () => {
         const result = await adapter.postMessage(threadId, { raw: "Hello" });
         expect(mockSocket.sendMessage).toHaveBeenCalledWith(
           "15551234567@s.whatsapp.net",
-          { text: "Hello" }
+          { text: "Hello" },
+          generatedMessageOptions
         );
-        expect(result.id).toBe("sent-msg-id");
+        expect(result.id).toBe("generated-id");
       });
 
       it("converts Markdown bold (**text**) to WhatsApp bold (*text*)", async () => {
@@ -533,6 +661,159 @@ describe("BaileysAdapter", () => {
         const [, payload] = mockSocket.sendMessage.mock.calls[0] as [string, { text: string }];
         expect(payload.text).toContain("*bold*");
         expect(payload.text).not.toMatch(/\*\*bold\*\*/);
+      });
+
+      it("sends markdown text as a rendered caption alongside a file", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const data = Buffer.from("img");
+        await adapter.postMessage(threadId, {
+          markdown: "**Bold** caption",
+          files: [{ data, filename: "pic.png", mimeType: "image/png" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(1);
+        const [, payload] = mockSocket.sendMessage.mock.calls[0] as [
+          string,
+          { image: Buffer; mimetype: string; caption: string }
+        ];
+        expect(payload.image).toBe(data);
+        expect(payload.mimetype).toBe("image/png");
+        // WhatsApp bold is *single-star*, not **double-star**
+        expect(payload.caption).toContain("*Bold*");
+        expect(payload.caption).not.toMatch(/\*\*Bold\*\*/);
+      });
+
+      it("sends an image file with the text as caption", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const data = Buffer.from("fake-png");
+        await adapter.postMessage(threadId, {
+          raw: "Look at this",
+          files: [{ data, filename: "pic.png", mimeType: "image/png" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(1);
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { image: data, mimetype: "image/png", caption: "Look at this" },
+          generatedMessageOptions
+        );
+      });
+
+      it("sends non-media files as documents with fileName", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const data = Buffer.from("%PDF-");
+        await adapter.postMessage(threadId, {
+          raw: "Report attached",
+          files: [{ data, filename: "report.pdf", mimeType: "application/pdf" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          {
+            document: data,
+            mimetype: "application/pdf",
+            fileName: "report.pdf",
+            caption: "Report attached",
+          },
+          generatedMessageOptions
+        );
+      });
+
+      it("sends text as a separate message when only audio attachments are present", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const data = Buffer.from("ogg-bytes");
+        await adapter.postMessage(threadId, {
+          raw: "Voice note",
+          files: [{ data, filename: "v.ogg", mimeType: "audio/ogg" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(2);
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          1,
+          "15551234567@s.whatsapp.net",
+          { text: "Voice note" },
+          generatedMessageOptions
+        );
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          2,
+          "15551234567@s.whatsapp.net",
+          { audio: data, mimetype: "audio/ogg" },
+          generatedMessageOptions
+        );
+      });
+
+      it("sends multiple media items, attaching caption to the first caption-compatible item", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const img = Buffer.from("img");
+        const pdf = Buffer.from("pdf");
+        await adapter.postMessage(threadId, {
+          raw: "Two files",
+          files: [
+            { data: img, filename: "a.png", mimeType: "image/png" },
+            { data: pdf, filename: "b.pdf", mimeType: "application/pdf" },
+          ],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(2);
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          1,
+          "15551234567@s.whatsapp.net",
+          { image: img, mimetype: "image/png", caption: "Two files" },
+          generatedMessageOptions
+        );
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          2,
+          "15551234567@s.whatsapp.net",
+          { document: pdf, mimetype: "application/pdf", fileName: "b.pdf" },
+          generatedMessageOptions
+        );
+      });
+
+      it("forwards an Attachment with fetchData (inbound re-send)", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        const fetched = Buffer.from("downloaded");
+        const fetchData = vi.fn().mockResolvedValue(fetched);
+        await adapter.postMessage(threadId, {
+          raw: "",
+          attachments: [
+            { type: "image", mimeType: "image/jpeg", name: "x", fetchData },
+          ],
+        });
+        expect(fetchData).toHaveBeenCalledTimes(1);
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { image: fetched, mimetype: "image/jpeg" },
+          generatedMessageOptions
+        );
+      });
+
+      it("sends an Attachment via URL when no binary data is available", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.postMessage(threadId, {
+          raw: "hi",
+          attachments: [
+            {
+              type: "video",
+              mimeType: "video/mp4",
+              name: "clip",
+              url: "https://example.com/clip.mp4",
+            },
+          ],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          {
+            video: { url: "https://example.com/clip.mp4" },
+            mimetype: "video/mp4",
+            caption: "hi",
+          },
+          generatedMessageOptions
+        );
+      });
+
+      it("throws when an attachment has no data, fetchData, or url", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await expect(
+          adapter.postMessage(threadId, {
+            raw: "oops",
+            attachments: [{ type: "image", mimeType: "image/png", name: "x" }],
+          })
+        ).rejects.toThrow(/attachment has no data/);
       });
     });
 
@@ -547,7 +828,8 @@ describe("BaileysAdapter", () => {
           {
             edit: { remoteJid: "15551234567@s.whatsapp.net", id: "original-id", fromMe: true },
             text: "Updated",
-          }
+          },
+          generatedMessageOptions
         );
       });
     });
@@ -560,7 +842,8 @@ describe("BaileysAdapter", () => {
         await adapter.deleteMessage(threadId, "msg-to-delete");
         expect(mockSocket.sendMessage).toHaveBeenCalledWith(
           "15551234567@s.whatsapp.net",
-          { delete: { remoteJid: "15551234567@s.whatsapp.net", id: "msg-to-delete", fromMe: true } }
+          { delete: { remoteJid: "15551234567@s.whatsapp.net", id: "msg-to-delete", fromMe: true } },
+          generatedMessageOptions
         );
       });
     });
@@ -578,7 +861,8 @@ describe("BaileysAdapter", () => {
               text: "👍",
               key: { remoteJid: "15551234567@s.whatsapp.net", id: "msg-id", fromMe: false },
             },
-          }
+          },
+          generatedMessageOptions
         );
       });
 
@@ -602,7 +886,8 @@ describe("BaileysAdapter", () => {
                 participant: "15559876543@s.whatsapp.net",
               },
             },
-          }
+          },
+          generatedMessageOptions
         );
       });
     });
@@ -620,7 +905,8 @@ describe("BaileysAdapter", () => {
               text: "",
               key: { remoteJid: "15551234567@s.whatsapp.net", id: "msg-id", fromMe: false },
             },
-          }
+          },
+          generatedMessageOptions
         );
       });
 
@@ -644,7 +930,8 @@ describe("BaileysAdapter", () => {
                 participant: "15559876543@s.whatsapp.net",
               },
             },
-          }
+          },
+          generatedMessageOptions
         );
       });
     });
@@ -670,7 +957,8 @@ describe("BaileysAdapter", () => {
         await adapter.postChannelMessage(channelId, { raw: "Channel msg" });
         expect(mockSocket.sendMessage).toHaveBeenCalledWith(
           "15551234567@s.whatsapp.net",
-          { text: "Channel msg" }
+          { text: "Channel msg" },
+          generatedMessageOptions
         );
       });
     });
@@ -768,7 +1056,7 @@ describe("BaileysAdapter", () => {
         expect(mockSocket.sendMessage).toHaveBeenCalledWith(
           "15551234567@s.whatsapp.net",
           { text: "Got it!" },
-          { quoted: raw }
+          { quoted: raw, messageId: "generated-id" }
         );
       });
 
@@ -784,7 +1072,7 @@ describe("BaileysAdapter", () => {
         const raw = makeDMMessage();
         const message = adapter.parseMessage(raw);
         const result = await adapter.reply(message, "ack");
-        expect(result.id).toBe("sent-msg-id");
+        expect(result.id).toBe("generated-id");
         expect(result.threadId).toBe(adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" }));
       });
 
@@ -794,6 +1082,50 @@ describe("BaileysAdapter", () => {
         message.threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
 
         await expect(adapter.reply(message, "ack")).rejects.toThrow(/threadId does not match/);
+      });
+
+      it("sends a quoted reply with an image + caption when given attachments", async () => {
+        const raw = makeDMMessage();
+        const message = adapter.parseMessage(raw);
+        const data = Buffer.from("png-bytes");
+        await adapter.reply(message, {
+          raw: "Here it is",
+          files: [{ data, filename: "pic.png", mimeType: "image/png" }],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(1);
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          { image: data, mimetype: "image/png", caption: "Here it is" },
+          { quoted: raw, messageId: "generated-id" }
+        );
+      });
+
+      it("quotes only the first message when replying with multiple attachments", async () => {
+        const raw = makeDMMessage();
+        const message = adapter.parseMessage(raw);
+        const a = Buffer.from("a");
+        const b = Buffer.from("b");
+        await adapter.reply(message, {
+          raw: "two",
+          files: [
+            { data: a, filename: "a.png", mimeType: "image/png" },
+            { data: b, filename: "b.pdf", mimeType: "application/pdf" },
+          ],
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledTimes(2);
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          1,
+          "15551234567@s.whatsapp.net",
+          { image: a, mimetype: "image/png", caption: "two" },
+          { quoted: raw, messageId: "generated-id" }
+        );
+        // Second send has no `quoted` third arg
+        expect(mockSocket.sendMessage).toHaveBeenNthCalledWith(
+          2,
+          "15551234567@s.whatsapp.net",
+          { document: b, mimetype: "application/pdf", fileName: "b.pdf" },
+          generatedMessageOptions
+        );
       });
     });
 
@@ -826,6 +1158,23 @@ describe("BaileysAdapter", () => {
         ]);
       });
 
+      it("accepts named arguments", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "123456789@g.us" });
+        await adapter.markRead({
+          threadId,
+          messageIds: ["msg-1"],
+          participant: "107082225311887@lid",
+        });
+        expect(mockSocket.readMessages).toHaveBeenCalledWith([
+          {
+            remoteJid: "123456789@g.us",
+            id: "msg-1",
+            fromMe: false,
+            participant: "107082225311887@lid",
+          },
+        ]);
+      });
+
       it("handles an empty messageIds array without error", async () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
         await adapter.markRead(threadId, []);
@@ -837,13 +1186,21 @@ describe("BaileysAdapter", () => {
 
     describe("setPresence (WhatsApp extension)", () => {
       it("calls sendPresenceUpdate with 'available'", async () => {
+        await capturedEvHandler!({ "connection.update": { connection: "open" } });
         await adapter.setPresence("available");
         expect(mockSocket.sendPresenceUpdate).toHaveBeenCalledWith("available");
       });
 
       it("calls sendPresenceUpdate with 'unavailable'", async () => {
+        await capturedEvHandler!({ "connection.update": { connection: "open" } });
         await adapter.setPresence("unavailable");
         expect(mockSocket.sendPresenceUpdate).toHaveBeenCalledWith("unavailable");
+      });
+
+      it("throws before the WhatsApp connection is open", async () => {
+        await expect(adapter.setPresence("available")).rejects.toThrow(
+          /wait for WhatsApp to open/
+        );
       });
     });
 
@@ -862,7 +1219,8 @@ describe("BaileysAdapter", () => {
               name: undefined,
               address: undefined,
             },
-          }
+          },
+          generatedMessageOptions
         );
       });
 
@@ -878,6 +1236,29 @@ describe("BaileysAdapter", () => {
         ];
         expect(payload.location.name).toBe("SF HQ");
         expect(payload.location.address).toBe("San Francisco, CA");
+      });
+
+      it("accepts named arguments", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.sendLocation({
+          threadId,
+          latitude: 37.7749,
+          longitude: -122.4194,
+          name: "SF HQ",
+          address: "San Francisco, CA",
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          {
+            location: {
+              degreesLatitude: 37.7749,
+              degreesLongitude: -122.4194,
+              name: "SF HQ",
+              address: "San Francisco, CA",
+            },
+          },
+          generatedMessageOptions
+        );
       });
 
       it("rejects invalid latitude values", async () => {
@@ -899,7 +1280,49 @@ describe("BaileysAdapter", () => {
         await adapter.sendPoll(threadId, "Best time?", ["10am", "2pm", "5pm"]);
         expect(mockSocket.sendMessage).toHaveBeenCalledWith(
           "15551234567@s.whatsapp.net",
-          { poll: { name: "Best time?", values: ["10am", "2pm", "5pm"], selectableCount: 1 } }
+          {
+            poll: {
+              name: "Best time?",
+              values: ["10am", "2pm", "5pm"],
+              selectableCount: 1,
+              messageSecret: expect.any(Buffer),
+            },
+          },
+          generatedMessageOptions
+        );
+      });
+
+      it("accepts named arguments", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-named-args", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 5) } },
+        });
+        await adapter.sendPoll({
+          threadId,
+          question: "Best time?",
+          options: ["10am", "2pm", "5pm"],
+          selectableCount: 2,
+          metadata: { askedBy: "user-42" },
+        });
+        expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+          "15551234567@s.whatsapp.net",
+          {
+            poll: {
+              name: "Best time?",
+              values: ["10am", "2pm", "5pm"],
+              selectableCount: 2,
+              messageSecret: expect.any(Buffer),
+            },
+          },
+          generatedMessageOptions
+        );
+        expect(mockState.set).toHaveBeenCalledWith(
+          "baileys:baileys:poll:poll-named-args",
+          expect.objectContaining({
+            metadata: { askedBy: "user-42" },
+          }),
+          expect.anything()
         );
       });
 
@@ -926,6 +1349,949 @@ describe("BaileysAdapter", () => {
       it("rejects negative selectableCount values", async () => {
         const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
         await expect(adapter.sendPoll(threadId, "Q?", ["A", "B"], -1)).rejects.toThrow(/selectableCount/);
+      });
+
+      it("persists poll metadata in the SDK state adapter on send", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-1", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: {
+            pollCreationMessageV3: {},
+          },
+        });
+
+        await adapter.sendPoll(threadId, "Time?", ["10am", "2pm"]);
+        const [, payload] = mockSocket.sendMessage.mock.calls[0] as [
+          string,
+          { poll: { messageSecret: Buffer } },
+        ];
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          "baileys:baileys:poll:poll-1",
+          expect.objectContaining({
+            question: "Time?",
+            options: ["10am", "2pm"],
+            messageSecret: payload.poll.messageSecret.toString("base64"),
+          }),
+          30 * 24 * 60 * 60 * 1000
+        );
+      });
+
+      it("stores the generated messageSecret even when Baileys returns no secret", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-no-secret", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { pollCreationMessageV3: {} },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+        const [, payload] = mockSocket.sendMessage.mock.calls[0] as [
+          string,
+          { poll: { messageSecret: Buffer } },
+        ];
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          "baileys:baileys:poll:poll-no-secret",
+          expect.objectContaining({
+            messageSecret: payload.poll.messageSecret.toString("base64"),
+          }),
+          expect.anything()
+        );
+      });
+
+      it("uses the configured pollTtlMs when provided", async () => {
+        adapter = makeAdapter({ pollTtlMs: 5000 });
+        await adapter.initialize(mockChat);
+        await adapter.connect();
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-ttl", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 1) } },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          expect.stringContaining("poll-ttl"),
+          expect.any(Object),
+          5000
+        );
+      });
+
+      it("treats pollTtlMs=0 as no TTL", async () => {
+        adapter = makeAdapter({ pollTtlMs: 0 });
+        await adapter.initialize(mockChat);
+        await adapter.connect();
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-no-ttl", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 2) } },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.any(Object),
+          undefined
+        );
+      });
+
+      it("persists caller-supplied metadata alongside the poll entry", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-meta", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 3) } },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"], 1, {
+          metadata: { askedBy: "user-42", quizId: 7 },
+        });
+
+        expect(mockState.set).toHaveBeenCalledWith(
+          "baileys:baileys:poll:poll-meta",
+          expect.objectContaining({
+            metadata: { askedBy: "user-42", quizId: 7 },
+          }),
+          expect.anything()
+        );
+      });
+
+      it("omits the metadata key entirely when none is provided", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: "poll-nometa", remoteJid: "15551234567@s.whatsapp.net", fromMe: true },
+          message: { messageContextInfo: { messageSecret: Buffer.alloc(32, 4) } },
+        });
+
+        await adapter.sendPoll(threadId, "Q?", ["A", "B"]);
+
+        const [, stored] = mockState.set.mock.calls.find(
+          ([key]) => key === "baileys:baileys:poll:poll-nometa"
+        ) as [string, Record<string, unknown>];
+        expect(Object.prototype.hasOwnProperty.call(stored, "metadata")).toBe(false);
+      });
+    });
+
+    // ── poll vote handling (pollUpdateMessage) ────────────────────────────────
+
+    describe("poll vote handling (pollUpdateMessage)", () => {
+      async function sendStubbedPoll(opts: {
+        jid: string;
+        pollId: string;
+        question: string;
+        options: string[];
+        secret?: Buffer;
+        metadata?: unknown;
+      }) {
+        const threadId = adapter.encodeThreadId({ jid: opts.jid });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: opts.pollId, remoteJid: opts.jid, fromMe: true },
+          message: {
+            messageContextInfo: { messageSecret: opts.secret ?? Buffer.alloc(32, 9) },
+          },
+        });
+        await adapter.sendPoll(
+          threadId,
+          opts.question,
+          opts.options,
+          1,
+          opts.metadata !== undefined ? { metadata: opts.metadata } : undefined
+        );
+        return threadId;
+      }
+
+      function makePollVoteMessage(opts: {
+        pollId: string;
+        chosen: string[];
+        remoteJid: string;
+        id?: string;
+        fromMe?: boolean;
+        participant?: string;
+        voterPushName?: string;
+      }): WAMessage {
+        return {
+          key: {
+            remoteJid: opts.remoteJid,
+            id: opts.id ?? `vote-${opts.pollId}`,
+            fromMe: opts.fromMe ?? false,
+            participant: opts.participant,
+          },
+          message: {
+            pollUpdateMessage: {
+              pollCreationMessageKey: {
+                remoteJid: opts.remoteJid,
+                id: opts.pollId,
+                fromMe: true,
+              },
+              vote: {
+                encPayload: Buffer.from(opts.chosen.join("|"), "utf8"),
+                encIv: Buffer.alloc(12, 0),
+              },
+              senderTimestampMs: 1700000003000,
+            },
+          },
+          pushName: opts.voterPushName ?? "Voter",
+          messageTimestamp: 1700000003,
+        } as WAMessage;
+      }
+
+      it("decrypts a DM vote and routes the chosen option as the message text", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        const threadId = await sendStubbedPoll({
+          jid,
+          pollId: "poll-dm",
+          question: "Time?",
+          options: ["10am", "2pm", "5pm"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-dm",
+                chosen: ["2pm"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).toHaveBeenCalledWith(
+          adapter,
+          threadId,
+          expect.any(Function)
+        );
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ text: string; author: { userId: string } }>,
+        ];
+        const built = await factory();
+        expect(built.text).toBe("2pm");
+        expect(built.author.userId).toBe("15551234567@s.whatsapp.net");
+      });
+
+      it("does not treat paired-phone poll votes as bot-authored", async () => {
+        mockSocket.user.id = "15550000000@s.whatsapp.net";
+        const jid = "15559876543@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-owner-vote",
+          question: "Time?",
+          options: ["10am", "2pm", "5pm"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-owner-vote",
+                chosen: ["10am"],
+                remoteJid: jid,
+                fromMe: true,
+                voterPushName: "Owner",
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ author: { userId: string; isMe: boolean; isBot: boolean } }>,
+        ];
+        const built = await factory();
+        expect(built.author.userId).toBe("15550000000@s.whatsapp.net");
+        expect(built.author.isMe).toBe(false);
+        expect(built.author.isBot).toBe(false);
+      });
+
+      it("retries poll vote decryption with raw device JIDs", async () => {
+        const baileys = await import("baileys");
+        const decryptMock = vi.mocked(baileys.decryptPollVote);
+        decryptMock.mockImplementation((vote, ctx) => {
+          if (
+            ctx.pollCreatorJid === "15550000000:5@s.whatsapp.net" &&
+            ctx.voterJid === "15550000000:5@s.whatsapp.net"
+          ) {
+            return {
+              selectedOptions: [createHash("sha256").update("A").digest()],
+            } as never;
+          }
+          throw new Error("wrong decrypt context");
+        });
+
+        mockSocket.user.id = "15550000000:5@s.whatsapp.net";
+        const jid = "15551234567@s.whatsapp.net";
+        const threadId = await sendStubbedPoll({
+          jid,
+          pollId: "poll-device-jid",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-device-jid",
+                chosen: ["A"],
+                remoteJid: jid,
+                fromMe: true,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).toHaveBeenCalledWith(
+          adapter,
+          threadId,
+          expect.any(Function)
+        );
+        expect(decryptMock).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            pollCreatorJid: "15550000000:5@s.whatsapp.net",
+            voterJid: "15550000000:5@s.whatsapp.net",
+          })
+        );
+      });
+
+      it("retries poll vote decryption with the live socket LID identity", async () => {
+        const baileys = await import("baileys");
+        const decryptMock = vi.mocked(baileys.decryptPollVote);
+        decryptMock.mockImplementation((vote, ctx) => {
+          if (
+            ctx.pollCreatorJid === "107000000000000@lid" &&
+            ctx.voterJid === "107082225311887@lid"
+          ) {
+            return {
+              selectedOptions: [createHash("sha256").update("A").digest()],
+            } as never;
+          }
+          throw new Error("wrong decrypt context");
+        });
+
+        mockSocket.user.id = "15550000000@s.whatsapp.net";
+        mockSocket.user.lid = "107000000000000@lid";
+        const jid = "107082225311887@lid";
+        const threadId = await sendStubbedPoll({
+          jid,
+          pollId: "poll-lid-context",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-lid-context",
+                chosen: ["A"],
+                remoteJid: jid,
+                fromMe: false,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).toHaveBeenCalledWith(
+          adapter,
+          threadId,
+          expect.any(Function)
+        );
+        expect(decryptMock).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            pollCreatorJid: "107000000000000@lid",
+            voterJid: "107082225311887@lid",
+          })
+        );
+      });
+
+      it("invokes onPollVote handlers with the structured decrypted payload", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        const threadId = await sendStubbedPoll({
+          jid,
+          pollId: "poll-cb",
+          question: "Pick",
+          options: ["A", "B", "C"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-cb",
+                chosen: ["A", "C"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            threadId,
+            pollMessageId: "poll-cb",
+            question: "Pick",
+            options: ["A", "B", "C"],
+            selectedOptions: ["A", "C"],
+            voter: expect.objectContaining({ userId: jid }),
+          })
+        );
+      });
+
+      it("round-trips sendPoll metadata to onPollVote handlers", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-meta-rt",
+          question: "Q?",
+          options: ["A", "B"],
+          metadata: { askedBy: "user-42" },
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-meta-rt",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pollMessageId: "poll-meta-rt",
+            metadata: { askedBy: "user-42" },
+          })
+        );
+      });
+
+      it("delivers metadata as undefined when the poll was sent without any", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-nometa-rt",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-nometa-rt",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        const vote = handler.mock.calls[0][0] as { metadata?: unknown };
+        expect(vote.metadata).toBeUndefined();
+      });
+
+      it("filters handlers registered with a specific pollMessageId", async () => {
+        const matchingHandler = vi.fn();
+        const otherHandler = vi.fn();
+        adapter.onPollVote("poll-match", matchingHandler);
+        adapter.onPollVote("poll-other", otherHandler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-match",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-match",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(matchingHandler).toHaveBeenCalledOnce();
+        expect(otherHandler).not.toHaveBeenCalled();
+      });
+
+      it("filters handlers registered with an array of pollMessageIds", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(["poll-a", "poll-b"], handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-b", question: "Q?", options: ["A", "B"] });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({ pollId: "poll-b", chosen: ["A"], remoteJid: jid }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledOnce();
+      });
+
+      it("dispatches to multiple handlers in registration order", async () => {
+        const order: string[] = [];
+        adapter.onPollVote(() => { order.push("first"); });
+        adapter.onPollVote(() => { order.push("second"); });
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-multi", question: "Q?", options: ["A", "B"] });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({ pollId: "poll-multi", chosen: ["A"], remoteJid: jid }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(order).toEqual(["first", "second"]);
+      });
+
+      it("isolates a thrown handler so other handlers still run", async () => {
+        const broken = vi.fn(() => {
+          throw new Error("oops");
+        });
+        const ok = vi.fn();
+        adapter.onPollVote(broken);
+        adapter.onPollVote(ok);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-iso", question: "Q?", options: ["A", "B"] });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({ pollId: "poll-iso", chosen: ["A"], remoteJid: jid }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(broken).toHaveBeenCalledOnce();
+        expect(ok).toHaveBeenCalledOnce();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          expect.stringContaining("handler threw"),
+          expect.any(Error)
+        );
+      });
+
+      it("rejects onPollVote called with a filter but no handler", () => {
+        expect(() => (adapter as unknown as { onPollVote: (x: string) => void }).onPollVote("only-id")).toThrow(
+          /handler is required/
+        );
+      });
+
+      it("uses the participant JID as the voter for group polls", async () => {
+        const groupJid = "123456789@g.us";
+        await sendStubbedPoll({
+          jid: groupJid,
+          pollId: "poll-group",
+          question: "Snack?",
+          options: ["pizza", "tacos"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-group",
+                chosen: ["tacos"],
+                remoteJid: groupJid,
+                participant: "15559876543@s.whatsapp.net",
+                voterPushName: "Alice",
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ text: string; author: { userId: string; userName: string } }>,
+        ];
+        const built = await factory();
+        expect(built.text).toBe("tacos");
+        expect(built.author.userId).toBe("15559876543@s.whatsapp.net");
+        expect(built.author.userName).toBe("Alice");
+      });
+
+      it("emits an empty-text message when the voter cleared their vote", async () => {
+        const handler = vi.fn();
+        adapter.onPollVote(handler);
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-clear",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-clear",
+                chosen: [],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledWith(
+          expect.objectContaining({ selectedOptions: [] })
+        );
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ text: string }>,
+        ];
+        expect((await factory()).text).toBe("");
+      });
+
+      it("warns and drops the vote when the poll is unknown to the state store", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "never-sent",
+                chosen: ["X"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).not.toHaveBeenCalled();
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("never-sent")
+        );
+      });
+
+      it("drops votes when decryption throws", async () => {
+        const baileys = await import("baileys");
+        const decryptMock = vi.mocked(baileys.decryptPollVote);
+        decryptMock.mockImplementationOnce(() => {
+          throw new Error("bad ciphertext");
+        });
+
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-broken",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-broken",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processMessage).not.toHaveBeenCalled();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          "Failed to decrypt poll vote",
+          expect.objectContaining({
+            error: expect.any(Error),
+            pollMessageId: "poll-broken",
+            pollCreatorJids: expect.arrayContaining(["15551234567@s.whatsapp.net"]),
+            voterJids: expect.arrayContaining(["15551234567@s.whatsapp.net"]),
+          })
+        );
+      });
+
+      it("ignores hashes that don't match any stored option", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        const baileys = await import("baileys");
+        const decryptMock = vi.mocked(baileys.decryptPollVote);
+        decryptMock.mockImplementationOnce(() => ({
+          selectedOptions: [createHash("sha256").update("Z").digest()],
+        }) as never);
+
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-mismatch",
+          question: "Q?",
+          options: ["A", "B"],
+        });
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-mismatch",
+                chosen: ["A"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        const [, , factory] = mockChat.processMessage.mock.calls[0] as [
+          unknown,
+          unknown,
+          () => Promise<{ text: string }>,
+        ];
+        expect((await factory()).text).toBe("");
+      });
+    });
+
+    // ── tracked poll registry (listTrackedPolls / forgetPoll) ────────────────
+
+    describe("tracked poll registry", () => {
+      async function sendStubbedPoll(opts: {
+        jid: string;
+        pollId: string;
+        question: string;
+        options: string[];
+        secret?: Buffer;
+        metadata?: unknown;
+      }) {
+        const threadId = adapter.encodeThreadId({ jid: opts.jid });
+        mockSocket.sendMessage.mockResolvedValueOnce({
+          key: { id: opts.pollId, remoteJid: opts.jid, fromMe: true },
+          message: {
+            messageContextInfo: { messageSecret: opts.secret ?? Buffer.alloc(32, 9) },
+          },
+        });
+        await adapter.sendPoll(
+          threadId,
+          opts.question,
+          opts.options,
+          1,
+          opts.metadata !== undefined ? { metadata: opts.metadata } : undefined
+        );
+        return threadId;
+      }
+
+      function makePollVoteMessage(opts: {
+        pollId: string;
+        chosen: string[];
+        remoteJid: string;
+        participant?: string;
+      }): WAMessage {
+        return {
+          key: {
+            remoteJid: opts.remoteJid,
+            id: `vote-${opts.pollId}`,
+            fromMe: false,
+            participant: opts.participant,
+          },
+          message: {
+            pollUpdateMessage: {
+              pollCreationMessageKey: {
+                remoteJid: opts.remoteJid,
+                id: opts.pollId,
+                fromMe: true,
+              },
+              vote: {
+                encPayload: Buffer.from(opts.chosen.join("|"), "utf8"),
+                encIv: Buffer.alloc(12, 0),
+              },
+              senderTimestampMs: 1700000003000,
+            },
+          },
+          pushName: "Voter",
+          messageTimestamp: 1700000003,
+        } as WAMessage;
+      }
+
+      it("listTrackedPolls returns polls with question, options, and threadId", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        const expectedThreadId = adapter.encodeThreadId({ jid });
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-track-1",
+          question: "Lunch?",
+          options: ["Pizza", "Burger"],
+        });
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-track-2",
+          question: "Drink?",
+          options: ["Water", "Soda"],
+        });
+
+        const tracked = await adapter.listTrackedPolls();
+        expect(tracked).toEqual([
+          {
+            pollMessageId: "poll-track-1",
+            threadId: expectedThreadId,
+            question: "Lunch?",
+            options: ["Pizza", "Burger"],
+          },
+          {
+            pollMessageId: "poll-track-2",
+            threadId: expectedThreadId,
+            question: "Drink?",
+            options: ["Water", "Soda"],
+          },
+        ]);
+      });
+
+      it("listTrackedPolls surfaces persisted metadata on each tracked entry", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-track-meta",
+          question: "Lunch?",
+          options: ["Pizza", "Burger"],
+          metadata: { askedBy: "user-42" },
+        });
+
+        const tracked = await adapter.listTrackedPolls();
+        expect(tracked).toHaveLength(1);
+        expect(tracked[0]).toMatchObject({
+          pollMessageId: "poll-track-meta",
+          metadata: { askedBy: "user-42" },
+        });
+      });
+
+      it("listTrackedPolls returns empty when nothing has been tracked", async () => {
+        expect(await adapter.listTrackedPolls()).toEqual([]);
+      });
+
+      it("listTrackedPolls filters out entries whose stored data is gone", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-keep", question: "Q?", options: ["A", "B"] });
+        await sendStubbedPoll({ jid, pollId: "poll-gone", question: "Q?", options: ["A", "B"] });
+
+        // Simulate the entry expiring out of the StateAdapter (TTL elapsed) —
+        // index still has the id, but get() returns null.
+        stateStore.delete("baileys:baileys:poll:poll-gone");
+
+        const tracked = await adapter.listTrackedPolls();
+        expect(tracked.map((p) => p.pollMessageId)).toEqual(["poll-keep"]);
+      });
+
+      it("listTrackedPolls dedupes index entries", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-dup", question: "Q?", options: ["A", "B"] });
+        // Send a second poll with the same id (e.g. retry). Index now has two
+        // entries for the same id; result should still list it once.
+        await sendStubbedPoll({ jid, pollId: "poll-dup", question: "Q?", options: ["A", "B"] });
+
+        const tracked = await adapter.listTrackedPolls();
+        expect(tracked.map((p) => p.pollMessageId)).toEqual(["poll-dup"]);
+      });
+
+      it("forgetPoll removes the stored entry so listTrackedPolls drops it", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-forget", question: "Q?", options: ["A", "B"] });
+        expect((await adapter.listTrackedPolls()).map((p) => p.pollMessageId)).toContain(
+          "poll-forget"
+        );
+
+        await adapter.forgetPoll("poll-forget");
+
+        expect(mockState.delete).toHaveBeenCalledWith("baileys:baileys:poll:poll-forget");
+        expect(await adapter.listTrackedPolls()).toEqual([]);
+      });
+
+      it("listTrackedPolls + onPollVote re-registration round-trips after restart", async () => {
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({
+          jid,
+          pollId: "poll-resume",
+          question: "Time?",
+          options: ["10am", "2pm"],
+        });
+
+        // Simulate restart: build a new adapter against the same persistent
+        // state. In-memory subscriptions are gone — re-register from state.
+        const restarted = makeAdapter();
+        await restarted.initialize(mockChat);
+        await restarted.connect();
+
+        const tracked = await restarted.listTrackedPolls();
+        const handler = vi.fn();
+        for (const poll of tracked) {
+          restarted.onPollVote(poll.pollMessageId, handler);
+        }
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makePollVoteMessage({
+                pollId: "poll-resume",
+                chosen: ["10am"],
+                remoteJid: jid,
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(handler.mock.calls[0][0]).toMatchObject({
+          pollMessageId: "poll-resume",
+          selectedOptions: ["10am"],
+        });
+      });
+
+      it("appends to the index with the configured pollTtlMs", async () => {
+        adapter = makeAdapter({ pollTtlMs: 5000 });
+        await adapter.initialize(mockChat);
+        await adapter.connect();
+        const jid = "15551234567@s.whatsapp.net";
+        await sendStubbedPoll({ jid, pollId: "poll-ttl-idx", question: "Q?", options: ["A", "B"] });
+
+        expect(mockState.appendToList).toHaveBeenCalledWith(
+          "baileys:baileys:poll-index",
+          "poll-ttl-idx",
+          expect.objectContaining({ ttlMs: 5000 })
+        );
       });
     });
 
@@ -1066,6 +2432,66 @@ describe("BaileysAdapter", () => {
         );
       });
 
+      it("does not treat paired-phone reactions as bot-authored", async () => {
+        mockSocket.user.id = "15550000000@s.whatsapp.net";
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makeReactionMessage({
+                key: {
+                  remoteJid: "15559876543@s.whatsapp.net",
+                  id: "manual-reaction",
+                  fromMe: true,
+                },
+                pushName: "Owner",
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processReaction).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user: expect.objectContaining({
+              userId: "15550000000@s.whatsapp.net",
+              isMe: false,
+              isBot: false,
+            }),
+          })
+        );
+      });
+
+      it("marks adapter-sent reaction echoes as bot-authored", async () => {
+        const threadId = adapter.encodeThreadId({ jid: "15551234567@s.whatsapp.net" });
+        await adapter.addReaction(threadId, "target-msg-1", "👍");
+        mockChat.processReaction.mockClear();
+
+        await capturedEvHandler!({
+          "messages.upsert": {
+            messages: [
+              makeReactionMessage({
+                key: {
+                  remoteJid: "15551234567@s.whatsapp.net",
+                  id: "generated-id",
+                  fromMe: true,
+                },
+                pushName: "Bot",
+              }),
+            ],
+            type: "notify",
+          },
+        });
+
+        expect(mockChat.processReaction).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user: expect.objectContaining({
+              isMe: true,
+              isBot: true,
+            }),
+          })
+        );
+      });
+
       it("calls chat.processMessage for each notify message", async () => {
         await capturedEvHandler!({
           "messages.upsert": { messages: [makeDMMessage()], type: "notify" },
@@ -1162,7 +2588,8 @@ describe("BaileysAdapter", () => {
   });
 
   describe("QR and pairing callbacks", () => {
-    it("emits QR and pairing code once while connecting", async () => {
+    it("emits QR immediately and requests pairing code once after a short delay", async () => {
+      vi.useFakeTimers();
       const onQR = vi.fn();
       const onPairingCode = vi.fn();
       adapter = makeAdapter({
@@ -1181,8 +2608,62 @@ describe("BaileysAdapter", () => {
       });
 
       expect(onQR).toHaveBeenCalledTimes(2);
+      expect(onPairingCode).not.toHaveBeenCalled();
+      expect(mockSocket.requestPairingCode).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(3000);
+
       expect(onPairingCode).toHaveBeenCalledTimes(1);
       expect(mockSocket.requestPairingCode).toHaveBeenCalledWith("15551234567");
+    });
+
+    it("cancels a pending pairing code request when the socket closes", async () => {
+      vi.useFakeTimers();
+      const onPairingCode = vi.fn();
+      adapter = makeAdapter({
+        phoneNumber: "15551234567",
+        onPairingCode,
+      });
+      await adapter.initialize(mockChat);
+      await adapter.connect();
+
+      await capturedEvHandler!({
+        "connection.update": { connection: "connecting", qr: "qr-value" },
+      });
+      await capturedEvHandler!({
+        "connection.update": {
+          connection: "close",
+          lastDisconnect: { error: { output: { statusCode: 401 } } },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(onPairingCode).not.toHaveBeenCalled();
+      expect(mockSocket.requestPairingCode).not.toHaveBeenCalled();
+    });
+
+    it("does not request a pairing code for registered credentials", async () => {
+      const onPairingCode = vi.fn();
+      adapter = makeAdapter({
+        auth: {
+          state: {
+            creds: { registered: true } as never,
+            keys: {} as never,
+          },
+          saveCreds: vi.fn(),
+        },
+        phoneNumber: "15551234567",
+        onPairingCode,
+      });
+      await adapter.initialize(mockChat);
+      await adapter.connect();
+
+      await capturedEvHandler!({
+        "connection.update": { connection: "connecting", qr: "qr-value" },
+      });
+
+      expect(onPairingCode).not.toHaveBeenCalled();
+      expect(mockSocket.requestPairingCode).not.toHaveBeenCalled();
     });
   });
 });

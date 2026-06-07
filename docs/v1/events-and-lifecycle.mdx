@@ -1,4 +1,7 @@
-# Events And Lifecycle
+---
+title: "Events And Lifecycle"
+description: "Adapter startup sequence, connect lifecycle, and event handling for the Baileys adapter."
+---
 
 Understanding the adapter lifecycle helps you set things up in the right order and handle edge cases like reconnections and auth flows correctly.
 
@@ -8,14 +11,26 @@ Understanding the adapter lifecycle helps you set things up in the right order a
 
 Always follow this order:
 
-```
-1. Prepare auth state          (useMultiFileAuthState or your own store)
-2. Create adapter              (createBaileysAdapter)
-3. Create Chat instance        (new Chat({ adapters: { ... } }))
-4. Register all handlers       (bot.onNewMention, bot.onSubscribedMessage, etc.)
-5. Initialize Chat             (await bot.initialize())
-6. Connect                     (await adapter.connect())
-```
+<Steps>
+  <Step>
+    **Prepare auth state**: use `useMultiFileAuthState` or your own store.
+  </Step>
+  <Step>
+    **Create adapter**: call `createBaileysAdapter`.
+  </Step>
+  <Step>
+    **Create Chat instance**: `new Chat({ adapters: { ... } })`.
+  </Step>
+  <Step>
+    **Register all handlers**: `bot.onNewMention`, `bot.onSubscribedMessage`, etc.
+  </Step>
+  <Step>
+    **Initialize Chat**: `await bot.initialize()`.
+  </Step>
+  <Step>
+    **Connect**: `await adapter.connect()`.
+  </Step>
+</Steps>
 
 **Why does handler registration come before `connect()`?**
 
@@ -51,10 +66,10 @@ Fires whenever Baileys internally rotates or updates credentials. The adapter ca
 
 Fires on any connection state change. The adapter handles:
 
-- **QR code available** — calls your `onQR` callback with the raw QR string.
-- **Pairing code requested** — calls your `onPairingCode` callback once per socket lifetime.
-- **Connection opened** — logs "Connected to WhatsApp" and sets the connected flag.
-- **Connection closed** — decides whether to reconnect (see below).
+- **QR code available**: calls your `onQR` callback with the raw QR string.
+- **Pairing code requested**: calls your `onPairingCode` callback once per socket lifetime.
+- **Connection opened**: logs "Connected to WhatsApp" and sets the connected flag.
+- **Connection closed**: decides whether to reconnect (see below).
 
 ### `messages.upsert`
 
@@ -71,11 +86,23 @@ Each valid message is decoded and forwarded to `chat.processMessage()`, which di
 
 ### QR code flow
 
-1. On first startup (no saved session), Baileys emits a `qr` field in `connection.update`.
-2. The adapter calls your `onQR(qr)` callback — render the QR however you like.
-3. The user scans the QR in WhatsApp → Settings → Linked Devices.
-4. WhatsApp sends a `restartRequired` (code 515) close event — this is expected. The adapter reconnects automatically to complete the handshake.
-5. The session is saved; subsequent startups skip the QR entirely.
+<Steps>
+  <Step>
+    On first startup (no saved session), Baileys emits a `qr` field in `connection.update`.
+  </Step>
+  <Step>
+    The adapter calls your `onQR(qr)` callback, so render the QR however you like.
+  </Step>
+  <Step>
+    The user scans the QR in WhatsApp → Settings → Linked Devices.
+  </Step>
+  <Step>
+    WhatsApp sends a `restartRequired` (code 515) close event, which is expected. The adapter reconnects automatically to complete the handshake.
+  </Step>
+  <Step>
+    The session is saved; subsequent startups skip the QR entirely.
+  </Step>
+</Steps>
 
 ```ts
 const whatsapp = createBaileysAdapter({
@@ -94,11 +121,23 @@ const whatsapp = createBaileysAdapter({
 
 ### Pairing code flow
 
-1. Set `phoneNumber` (E.164 without `+`) and `onPairingCode` in the config.
-2. When the socket starts connecting, the adapter calls `socket.requestPairingCode(phoneNumber)`.
-3. Your `onPairingCode` callback receives the 8-digit code string.
-4. The user enters the code in WhatsApp → Settings → Linked Devices → Link with phone number.
-5. After linking, credentials are saved and future startups are automatic.
+<Steps>
+  <Step>
+    Set `phoneNumber` (E.164 without `+`) and `onPairingCode` in the config.
+  </Step>
+  <Step>
+    Shortly after a fresh, unregistered socket starts connecting, the adapter calls `socket.requestPairingCode(phoneNumber)`.
+  </Step>
+  <Step>
+    Your `onPairingCode` callback receives the 8-digit code string.
+  </Step>
+  <Step>
+    The user enters the code in WhatsApp → Settings → Linked Devices → Link with phone number.
+  </Step>
+  <Step>
+    After linking, credentials are saved and future startups are automatic.
+  </Step>
+</Steps>
 
 ```ts
 const whatsapp = createBaileysAdapter({
@@ -111,7 +150,9 @@ const whatsapp = createBaileysAdapter({
 });
 ```
 
-> **Note:** Use either `onQR` or `phoneNumber`/`onPairingCode`, not both at the same time.
+<Callout type="info">
+  Use either `onQR` or `phoneNumber`/`onPairingCode`, not both at the same time.
+</Callout>
 
 ---
 
@@ -124,7 +165,7 @@ The adapter automatically reconnects when the connection drops unexpectedly. The
 | QR scan completed (normal handshake step) | `515` (restartRequired) | Yes |
 | Network error / server timeout | varies | Yes |
 | Logged out from WhatsApp app | `401` (loggedOut) | **No** |
-| `adapter.disconnect()` called explicitly | — | **No** |
+| `adapter.disconnect()` called explicitly | N/A | **No** |
 
 When reconnecting after a logout, you need to delete the saved credentials and restart with a fresh QR scan:
 
@@ -142,7 +183,7 @@ function onLoggedOut() {
 
 ## Disconnecting cleanly
 
-Call `disconnect()` when you want to shut down gracefully — for example, in a SIGTERM handler:
+Call `disconnect()` when you want to shut down gracefully (for example, in a SIGTERM handler):
 
 ```ts
 process.on("SIGTERM", async () => {

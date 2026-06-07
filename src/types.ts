@@ -1,5 +1,5 @@
-import type { Logger } from "chat";
-import type { AuthenticationState, WAVersion } from "baileys";
+import type { Author, Logger } from "chat";
+import type { AuthenticationState, WAMessage, WAVersion } from "baileys";
 
 /** Decoded thread ID components for WhatsApp (Baileys) */
 export interface BaileysThreadId {
@@ -15,6 +15,63 @@ export interface BaileysGroupParticipant {
   isAdmin: boolean;
   /** True only for the group creator (super-admin) */
   isSuperAdmin: boolean;
+}
+
+/** Named arguments for {@link BaileysAdapter.markRead}. */
+export interface BaileysMarkReadArgs {
+  /** Encoded thread ID whose messages should be marked as read. */
+  threadId: string;
+  /** Message IDs to acknowledge. */
+  messageIds: string[];
+  /** Optional sender JID/LID for group messages. */
+  participant?: string;
+}
+
+/** Named arguments for {@link BaileysAdapter.sendLocation}. */
+export interface BaileysSendLocationArgs {
+  /** Encoded thread ID that should receive the location pin. */
+  threadId: string;
+  /** Latitude in decimal degrees (WGS 84). */
+  latitude: number;
+  /** Longitude in decimal degrees (WGS 84). */
+  longitude: number;
+  /** Optional place name shown on the pin. */
+  name?: string;
+  /** Optional address shown below the place name. */
+  address?: string;
+}
+
+/**
+ * Decrypted poll vote delivered to {@link BaileysAdapterConfig.onPollVote}.
+ *
+ * WhatsApp poll votes are end-to-end encrypted; the adapter tracks each poll
+ * sent via {@link BaileysAdapter.sendPoll} (using the Chat SDK's `StateAdapter`
+ * for persistence) and decrypts incoming `pollUpdateMessage` events back into
+ * the option names the voter selected.
+ *
+ * `selectedOptions` is empty when the voter cleared their vote.
+ */
+export interface BaileysPollVote {
+  /** Encoded thread ID where the poll lives */
+  threadId: string;
+  /** Message ID of the original poll the bot sent */
+  pollMessageId: string;
+  /** Original poll question */
+  question: string;
+  /** Original poll options (in send order) */
+  options: string[];
+  /** Option names the voter currently has selected (empty = vote cleared) */
+  selectedOptions: string[];
+  /** Author info for the voter */
+  voter: Author;
+  /** Raw Baileys vote message */
+  raw: WAMessage;
+  /**
+   * Arbitrary metadata supplied to {@link BaileysAdapter.sendPoll}. Persisted
+   * alongside the poll's decryption state and round-tripped unchanged to every
+   * vote on that poll. `undefined` when no metadata was provided.
+   */
+  metadata?: unknown;
 }
 
 /** Configuration for the Baileys adapter */
@@ -77,8 +134,9 @@ export interface BaileysAdapterConfig {
    *
    * Example: `+1 (234) 567-8901` → `"12345678901"`
    *
-   * When set, the adapter calls `sock.requestPairingCode()` as soon as
-   * the socket begins connecting, and invokes `onPairingCode` with the result.
+   * When set, the adapter requests a pairing code shortly after a fresh,
+   * unregistered socket begins connecting, then invokes `onPairingCode` with
+   * the result.
    */
   phoneNumber?: string;
 
@@ -98,4 +156,64 @@ export interface BaileysAdapterConfig {
    * `auth` and `version` are managed by the adapter.
    */
   socketOptions?: Record<string, unknown>;
+
+  /**
+   * TTL (milliseconds) for stored poll metadata in the SDK's `StateAdapter`.
+   * Defaults to 30 days. Pass `0` to keep entries until explicitly evicted.
+   */
+  pollTtlMs?: number;
+}
+
+/** Handler signature for poll vote subscriptions. */
+export type BaileysPollVoteHandler = (
+  vote: BaileysPollVote
+) => void | Promise<void>;
+
+/**
+ * A poll the adapter is currently tracking — i.e. one previously sent via
+ * {@link BaileysAdapter.sendPoll} whose decryption metadata is still stored
+ * in the SDK's `StateAdapter`.
+ *
+ * Use {@link BaileysAdapter.listTrackedPolls} on startup to re-register
+ * per-poll handlers (`onPollVote(pollId, handler)`) after a process restart.
+ */
+export interface BaileysTrackedPoll {
+  /** Message ID of the original poll. Pass to `onPollVote(pollId, handler)`. */
+  pollMessageId: string;
+  /** Encoded thread ID where the poll lives. */
+  threadId: string;
+  /** Original poll question. */
+  question: string;
+  /** Original poll options (in send order). */
+  options: string[];
+  /** Arbitrary metadata supplied to {@link BaileysAdapter.sendPoll}. */
+  metadata?: unknown;
+}
+
+/** Options for {@link BaileysAdapter.sendPoll}. */
+export interface BaileysSendPollOptions {
+  /**
+   * Arbitrary, opaque metadata to associate with this poll. Persisted in the
+   * SDK's `StateAdapter` alongside the poll's decryption state and round-tripped
+   * unchanged to every {@link BaileysPollVote} on this poll. Useful for
+   * app-specific context (e.g. "askedBy" user id, quiz id, correlation id).
+   */
+  metadata?: unknown;
+}
+
+/** Named arguments for {@link BaileysAdapter.sendPoll}. */
+export interface BaileysSendPollArgs {
+  /** Encoded thread ID that should receive the poll. */
+  threadId: string;
+  /** Poll question text. */
+  question: string;
+  /** Poll options in send order. */
+  options: string[];
+  /**
+   * How many options a user can select.
+   * Defaults to `1`. Use `0` for unlimited.
+   */
+  selectableCount?: number;
+  /** Opaque app-level metadata persisted alongside poll state. */
+  metadata?: unknown;
 }

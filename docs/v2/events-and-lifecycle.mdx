@@ -1,16 +1,19 @@
-# Events and Lifecycle
+---
+title: "Events and Lifecycle"
+description: "Adapter lifecycle stages, event handling, reconnections, and auth flow ordering."
+---
 
 Understanding the adapter lifecycle helps you set things up in the right order and handle edge cases like reconnections and auth flows correctly.
 
-Related docs:
-
-- [Quickstart](./quickstart.md) — basic setup from scratch
-- [Concepts](./concepts.md) — how Chat SDK concepts map to WhatsApp
-- [Thread IDs and Multi-Account](./thread-ids-and-multi-account.md) — running multiple WhatsApp accounts
-- [Extensions](./extensions.md) — WhatsApp-specific methods
-- [Formatting and Media](./formatting-and-media.md) — text formatting and file handling
-- [Error Handling](./error-handling.md) — validation errors and troubleshooting
-- [Migrating from v1 to v2](../migration/v1-to-v2.md) — upgrade guide
+<Cards>
+  <Card title="Quickstart" href="/docs/chat-adapter-baileys/v2/quickstart">Basic setup from scratch</Card>
+  <Card title="Concepts" href="/docs/chat-adapter-baileys/v2/concepts">How Chat SDK concepts map to WhatsApp</Card>
+  <Card title="Thread IDs and Multi-Account" href="/docs/chat-adapter-baileys/v2/thread-ids-and-multi-account">Running multiple WhatsApp accounts</Card>
+  <Card title="Extensions" href="/docs/chat-adapter-baileys/v2/extensions">WhatsApp-specific methods</Card>
+  <Card title="Formatting and Media" href="/docs/chat-adapter-baileys/v2/formatting-and-media">Text formatting and file handling</Card>
+  <Card title="Error Handling" href="/docs/chat-adapter-baileys/v2/error-handling">Validation errors and troubleshooting</Card>
+  <Card title="Migrating from v1 to v2" href="/docs/chat-adapter-baileys/v2/migration">Upgrade guide</Card>
+</Cards>
 
 ---
 
@@ -18,18 +21,32 @@ Related docs:
 
 Always follow this order:
 
-```
-1. Prepare auth state          (useMultiFileAuthState or your own store)
-2. Create adapter              (createBaileysAdapter)
-3. Create Chat instance        (new Chat({ adapters: { ... } }))
-4. Register all handlers       (bot.onNewMention, bot.onSubscribedMessage, etc.)
-5. Initialize Chat             (await bot.initialize())
-6. Connect                     (await adapter.connect())
-```
+<Steps>
+  <Step>
+    **Prepare auth state:** `useMultiFileAuthState` or your own store
+  </Step>
+  <Step>
+    **Create adapter:** `createBaileysAdapter`
+  </Step>
+  <Step>
+    **Create Chat instance:** `new Chat({ adapters: { ... } })`
+  </Step>
+  <Step>
+    **Register all handlers:** `bot.onNewMention`, `bot.onSubscribedMessage`, etc.
+  </Step>
+  <Step>
+    **Initialize Chat:** `await bot.initialize()`
+  </Step>
+  <Step>
+    **Connect:** `await adapter.connect()`
+  </Step>
+</Steps>
 
 ### Why handlers before connect?
 
-`connect()` opens the WebSocket and starts receiving messages immediately. If you register handlers after connecting, any messages that arrive during the gap will be dropped silently. Register everything first, then connect.
+<Callout type="warn">
+  `connect()` opens the WebSocket and starts receiving messages immediately. If you register handlers after connecting, any messages that arrive during the gap will be dropped silently. Register everything first, then connect.
+</Callout>
 
 ```ts
 const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
@@ -59,16 +76,16 @@ await whatsapp.connect();
 
 ### creds.update
 
-Fires whenever Baileys internally rotates or updates credentials. The adapter calls `saveCreds()` automatically — you don't need to handle this yourself.
+Fires whenever Baileys internally rotates or updates credentials. The adapter calls `saveCreds()` automatically, so you don't need to handle this yourself.
 
 ### connection.update
 
 Fires on any connection state change. The adapter handles:
 
-- **QR code available** — calls your `onQR` callback with the raw QR string
-- **Pairing code requested** — calls your `onPairingCode` callback once per socket lifetime
-- **Connection opened** — logs "Connected to WhatsApp" and sets the connected flag
-- **Connection closed** — decides whether to reconnect (see below)
+- **QR code available:** calls your `onQR` callback with the raw QR string
+- **Pairing code requested:** calls your `onPairingCode` callback once per socket lifetime
+- **Connection opened:** logs "Connected to WhatsApp" and sets the connected flag
+- **Connection closed:** decides whether to reconnect (see below)
 
 ### messages.upsert
 
@@ -85,11 +102,23 @@ Each valid message is decoded and forwarded to `chat.processMessage()`, which di
 
 ### QR code flow
 
-1. On first startup (no saved session), Baileys emits a `qr` field in `connection.update`
-2. The adapter calls your `onQR(qr)` callback — render the QR however you like
-3. The user scans the QR in WhatsApp → Settings → Linked Devices
-4. WhatsApp sends a `restartRequired` (code 515) close event — this is expected. The adapter reconnects automatically to complete the handshake
-5. The session is saved; subsequent startups skip the QR entirely
+<Steps>
+  <Step>
+    On first startup (no saved session), Baileys emits a `qr` field in `connection.update`
+  </Step>
+  <Step>
+    The adapter calls your `onQR(qr)` callback; render the QR however you like
+  </Step>
+  <Step>
+    The user scans the QR in WhatsApp → Settings → Linked Devices
+  </Step>
+  <Step>
+    WhatsApp sends a `restartRequired` (code 515) close event (this is expected). The adapter reconnects automatically to complete the handshake
+  </Step>
+  <Step>
+    The session is saved; subsequent startups skip the QR entirely
+  </Step>
+</Steps>
 
 ```ts
 const whatsapp = createBaileysAdapter({
@@ -108,11 +137,23 @@ const whatsapp = createBaileysAdapter({
 
 ### Pairing code flow
 
-1. Set `phoneNumber` (E.164 without `+`) and `onPairingCode` in the config
-2. When the socket starts connecting (or a QR code is emitted), the adapter calls `socket.requestPairingCode(phoneNumber)`
-3. Your `onPairingCode` callback receives the 8-digit code string
-4. The user enters the code in WhatsApp → Settings → Linked Devices → Link with phone number
-5. After linking, credentials are saved and future startups are automatic
+<Steps>
+  <Step>
+    Set `phoneNumber` (E.164 without `+`) and `onPairingCode` in the config
+  </Step>
+  <Step>
+    Shortly after a fresh, unregistered socket starts connecting (or a QR code is emitted), the adapter calls `socket.requestPairingCode(phoneNumber)`
+  </Step>
+  <Step>
+    Your `onPairingCode` callback receives the 8-digit code string
+  </Step>
+  <Step>
+    The user enters the code in WhatsApp → Settings → Linked Devices → Link with phone number
+  </Step>
+  <Step>
+    After linking, credentials are saved and future startups are automatic
+  </Step>
+</Steps>
 
 ```ts
 const whatsapp = createBaileysAdapter({
@@ -125,7 +166,9 @@ const whatsapp = createBaileysAdapter({
 });
 ```
 
-> **Note:** Do not use both `onQR` and `phoneNumber`/`onPairingCode` together. Choose one authentication method.
+<Callout type="warn">
+  Do not use both `onQR` and `phoneNumber`/`onPairingCode` together. Choose one authentication method.
+</Callout>
 
 ---
 
@@ -138,7 +181,7 @@ The adapter automatically reconnects when the connection drops unexpectedly. The
 | QR scan completed (normal handshake) | `515` (restartRequired) | Yes |
 | Network error / server timeout | varies | Yes |
 | Logged out from WhatsApp app | `401` (loggedOut) | **No** |
-| `adapter.disconnect()` called | — | **No** |
+| `adapter.disconnect()` called | N/A | **No** |
 
 When logged out, you need to delete the saved credentials and restart with a fresh QR scan:
 
@@ -156,7 +199,7 @@ function onLoggedOut() {
 
 ## Disconnecting cleanly
 
-Call `disconnect()` when shutting down gracefully — for example, in a SIGTERM handler:
+Call `disconnect()` when shutting down gracefully, for example in a SIGTERM handler:
 
 ```ts
 process.on("SIGTERM", async () => {
@@ -204,22 +247,48 @@ BaileysAdapter._createSocket() event handler
 
 Reactions are handled separately from regular messages in the `messages.upsert` event:
 
-1. **Detection:** The adapter checks for `reactionMessage` in the message content
-2. **Normalization:** Emoji text is normalized using the Chat SDK's `defaultEmojiResolver`
-3. **Routing:** `chat.processReaction()` dispatches to your `bot.onReaction()` handlers
+<Steps>
+  <Step>
+    **Detection:** The adapter checks for `reactionMessage` in the message content
+  </Step>
+  <Step>
+    **Normalization:** Emoji text is normalized using the Chat SDK's `defaultEmojiResolver`
+  </Step>
+  <Step>
+    **Routing:** `chat.processReaction()` dispatches to your `bot.onReaction()` handlers
+  </Step>
+</Steps>
 
 Your reaction handler receives an event object with these fields:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `event.added` | `boolean` | `true` if reaction was added, `false` if removed |
-| `event.emoji` | `EmojiValue` | Normalized emoji (e.g., 👍) |
-| `event.messageId` | `string` | ID of the message being reacted to |
-| `event.user` | `Author` | User who reacted |
-| `event.thread` | `Thread` | Thread where the reaction occurred |
+<TypeTable
+  type={{
+    "event.added": {
+      description: "true if reaction was added, false if removed",
+      type: "boolean",
+    },
+    "event.emoji": {
+      description: "Normalized emoji (e.g., 👍)",
+      type: "EmojiValue",
+    },
+    "event.messageId": {
+      description: "ID of the message being reacted to",
+      type: "string",
+    },
+    "event.user": {
+      description: "User who reacted",
+      type: "Author",
+    },
+    "event.thread": {
+      description: "Thread where the reaction occurred",
+      type: "Thread",
+    },
+  }}
+/>
 
 ```ts
 bot.onReaction(["👍", "👎"], async (event) => {
   const action = event.added ? "added" : "removed";
   console.log(`${event.user.userName} ${action} ${event.emoji}`);
 });
+```
